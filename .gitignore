@@ -33,3 +33,7 @@ go.work
 .vscode/
 *.swp
 *~
+
+# Git worktrees
+.worktrees/
+worktrees/
