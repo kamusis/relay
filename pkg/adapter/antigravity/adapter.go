@@ -273,8 +273,20 @@ func (a *Adapter) Deliver(ctx context.Context, t adapter.Transmission) error {
 		return fmt.Errorf("antigravity agentapi binary not found at %s: %w", bin, err)
 	}
 
+	addr, token, err := a.resolveLSConnection()
+	if err != nil {
+		return fmt.Errorf("cannot connect to antigravity: %w", err)
+	}
+
 	payload := t.FormatPayload()
 	cmd := exec.CommandContext(ctx, bin, "send-message", t.ToSession, payload)
+
+	// Ensure ANTIGRAVITY_LS_ADDRESS and ANTIGRAVITY_CSRF_TOKEN are present in child environment
+	env := os.Environ()
+	env = append(env, "ANTIGRAVITY_LS_ADDRESS="+addr)
+	env = append(env, "ANTIGRAVITY_CSRF_TOKEN="+token)
+	cmd.Env = env
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("agentapi send-message failed: %s: %w", string(out), err)
