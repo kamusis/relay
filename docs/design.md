@@ -280,16 +280,17 @@ Since multiple agent sessions, git hooks, or background tasks can run `relay` CL
   - Checks for active lease files in `~/.qoder/tasks/<session-id>/.task-locks/*.lease`.
   - Verifies `stop_reason == "end_turn"` in the active assistant turn.
 - **Message Injection**:
-  - Dispatches message using the bundled headless worker CLI:
+  - Dispatches message using the headless worker CLI:
     ```bash
-    qoder-worker-runtime -w <workspace> -r <session-id> -p "<formatted_content>"
+    qodercli -w <workspace> -r <session-id> --dangerously-skip-permissions -p "<formatted_content>"
     ```
-    *(Note: `-p` / `--print` instructs `qoder-worker-runtime` to run non-interactively without spawning a TTY session, and `<formatted_content>` is passed as the positional query argument).*
+    *(Note: `-p` / `--print` instructs `qodercli` to run non-interactively without spawning a TTY session, and `<formatted_content>` is passed as the positional query argument. Because headless execution cannot answer interactive terminal permission prompts, `--dangerously-skip-permissions` is passed to allow autonomous multi-tool execution without hanging).*
   - Binary discovery precedence:
     1. Environment variable override: `QODER_CLI_PATH`
-    2. `~/.qoder/remote/protocol-v1/installs/*/bin/qoder-worker-runtime`
+    2. Standalone `qodercli` or `qoder-worker-runtime` in `~/.local/bin/`
     3. PATH (`qodercli`)
     4. PATH (`qoder`, excluding GUI launcher `~/.qoder/entry/qoder`)
+    5. Built-in worker runtime fallback in `~/.qoder/remote/protocol-v1/installs/*/*/bin/qoder-worker-runtime`
 
 ### 3.3 Relayed Message Injection Format
 To give the recipient agent clear provenance and actionable instructions, `Adapter.Deliver` formats the payload into a standard envelope before passing it to the target agent's CLI:
@@ -380,6 +381,9 @@ relay send <link_name> --to <target> [prompt]
   - When the link connects two different agent types (e.g. `agy` and `qoder`), `--to agy` or `--to qoder` uniquely specifies the target. The sender is automatically the other side.
   - When the link connects two sessions of the same agent (e.g. two `agy` sessions), `--to <session_id>` (or short prefix) resolves the target.
 - `[prompt]` is an optional user directive prepended to the relayed body.
+- **Timeout Configuration**:
+  - Controlled by the `RELAY_DELIVERY_TIMEOUT` environment variable (defaults to `300s`).
+  - Supports standard Go duration strings, e.g. `RELAY_DELIVERY_TIMEOUT=600s` or `10m` for long multi-tool tasks.
 
 *Examples:*
 ```bash
@@ -454,7 +458,32 @@ TIME                 LINK       DIR           STATUS     PROMPT                 
 
 ---
 
-## 6. Phased Roadmap & Implementation Strategy
+## 6. Threat Model & Security Boundaries
+
+`relay` is designed for personal developer workstations as a zero-friction, cross-agent coordination bus. Its security posture and boundaries are governed by the following invariants:
+
+### 6.1 Trust Boundary
+- **Single-User Workstation Assumption**: `relay` operates within the developer's local user account (`$HOME`). It assumes all conversation sessions on the machine belong to the same authorized developer.
+- **Explicit Channel Requirement**: Messages are only routed across channels explicitly created by the developer via `relay link create`. Agents cannot dynamically connect to unlinked sessions.
+
+### 6.2 Autonomous Non-Interactive Execution
+- **Headless Permission Bypass**:
+  - Headless worker execution (e.g. `qodercli -p`) runs in a non-interactive subprocess without a controlling TTY, making interactive approval prompts impossible.
+  - To enable autonomous cross-agent collaboration without process deadlocks, target agent invocations pass `--dangerously-skip-permissions`.
+  - *Operational Implication*: Source agents can trigger tool execution and file modifications in the target agent. Relay is an automated peer-execution bus; for environments requiring step-by-step human review, developers should use interactive IDE sessions instead of headless relay.
+
+### 6.3 Fail-Closed Credential & Process Discovery
+- **Antigravity Language Server Discovery**:
+  - Auto-discovery inspects `/proc` to discover the local Language Server port and CSRF token.
+  - Strictly **fail-closed**: if `/proc/<pid>/fd` cannot be inspected to verify socket ownership, discovery immediately terminates and refuses to probe arbitrary listening ports on the host.
+  - Discovery requires exact binary naming (`language_server`) and process argument validation (`antigravity`), preventing credential submission to untrusted processes.
+
+### 6.4 Concurrency & Integrity
+- File operations on `links.json` use mandatory cross-process file locks (`flock`) on `~/.config/relay/links.json.lock` combined with uniquely named atomic temporary files (`links.json.<pid>.<nanotime>.tmp`) to guarantee data integrity under concurrent multi-agent executions.
+
+---
+
+## 7. Phased Roadmap & Implementation Strategy
 
 ### Phase 1: Core MVP (Antigravity <-> Qoder Interoperability)
 - **Core Domain & Storage**:
