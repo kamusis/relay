@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/google/uuid"
@@ -272,9 +271,18 @@ func newLinkCmd() *cobra.Command {
 			// Hist store for last relay timestamp lookup
 			histStore, _ := history.NewDefaultStore()
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "LINK\tENDPOINT A\tENDPOINT B\tLAST RELAY")
+			type linkRow struct {
+				name      string
+				epA       string
+				epB       string
+				lastRelay string
+			}
 
+			maxName := runewidth.StringWidth("LINK")
+			maxEPA := runewidth.StringWidth("ENDPOINT A")
+			maxEPB := runewidth.StringWidth("ENDPOINT B")
+
+			var rows []linkRow
 			for _, l := range links {
 				sessA := l.SessionA
 				sessB := l.SessionB
@@ -310,12 +318,46 @@ func newLinkCmd() *cobra.Command {
 					}
 				}
 
-				epADisplay := fmt.Sprintf("%s:%s (%s)", sessA.Agent, adapter.ShortID(sessA.ID), sessA.Title)
-				epBDisplay := fmt.Sprintf("%s:%s (%s)", sessB.Agent, adapter.ShortID(sessB.ID), sessB.Title)
+				titleATrunc := runewidth.Truncate(sessA.Title, 30, "...")
+				titleBTrunc := runewidth.Truncate(sessB.Title, 30, "...")
+				epADisplay := fmt.Sprintf("%s:%s (%s)", sessA.Agent, adapter.ShortID(sessA.ID), titleATrunc)
+				epBDisplay := fmt.Sprintf("%s:%s (%s)", sessB.Agent, adapter.ShortID(sessB.ID), titleBTrunc)
 
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", l.Name, epADisplay, epBDisplay, lastRelayStr)
+				if w := runewidth.StringWidth(l.Name); w > maxName {
+					maxName = w
+				}
+				if w := runewidth.StringWidth(epADisplay); w > maxEPA {
+					maxEPA = w
+				}
+				if w := runewidth.StringWidth(epBDisplay); w > maxEPB {
+					maxEPB = w
+				}
+
+				rows = append(rows, linkRow{
+					name:      l.Name,
+					epA:       epADisplay,
+					epB:       epBDisplay,
+					lastRelay: lastRelayStr,
+				})
 			}
-			w.Flush()
+
+			// Print visually aligned header
+			fmt.Printf("%s  %s  %s  %s\n",
+				runewidth.FillRight("LINK", maxName),
+				runewidth.FillRight("ENDPOINT A", maxEPA),
+				runewidth.FillRight("ENDPOINT B", maxEPB),
+				"LAST RELAY",
+			)
+
+			// Print visually aligned rows
+			for _, r := range rows {
+				fmt.Printf("%s  %s  %s  %s\n",
+					runewidth.FillRight(r.name, maxName),
+					runewidth.FillRight(r.epA, maxEPA),
+					runewidth.FillRight(r.epB, maxEPB),
+					r.lastRelay,
+				)
+			}
 			return nil
 		},
 	}
