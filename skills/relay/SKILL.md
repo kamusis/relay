@@ -1,6 +1,6 @@
 ---
 name: relay
-description: Cross-agent communication and peer-review orchestration between Google Antigravity and Qoder (QoderWork). Use whenever the user asks to relay work results, code changes, or review tasks between Antigravity and Qoder sessions (e.g., "把 agy 会话里的工作成果发给 qoder 审核", "让 qoder 审一下当前代码", "把 qoder 评审传回 agy", "建立 agy 和 qoder 的 link", "relay send"). Handles autonomous session discovery, auto-creation of missing Qoder sessions, auto-creation of missing links, and bidirectional headless delivery.
+description: Cross-agent communication and peer-review orchestration between Google Antigravity and Qoder CLI (https://qoder.com/cli). Use whenever the user asks to relay work results, code changes, or review tasks between Antigravity and Qoder sessions (e.g., "把 agy 会话里的工作成果发给 qoder 审核", "让 qoder 审一下当前代码", "把 qoder 评审传回 agy", "建立 agy 和 qoder 的 link", "relay send"). Handles autonomous session discovery, auto-creation of missing Qoder sessions, auto-creation of missing links, and bidirectional headless delivery.
 ---
 
 # Relay: Cross-Agent Communication & Peer Review
