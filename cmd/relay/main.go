@@ -559,10 +559,13 @@ func newSendCmd() *cobra.Command {
 			snippet = runewidth.Truncate(snippet, 80, "...")
 
 			fmt.Println("Relay delivered successfully.")
+			fmt.Printf("  Transmission ID: %s\n", tx.ID)
+			fmt.Printf("  From:            %s (session %s)\n", srcSess.Agent, adapter.ShortID(freshSrc.ID))
+			fmt.Printf("  To:              %s (session %s)\n", tgtSess.Agent, adapter.ShortID(freshTgt.ID))
 			if userPrompt != "" {
-				fmt.Printf("  Directive: %s\n", userPrompt)
+				fmt.Printf("  Directive:       %s\n", userPrompt)
 			}
-			fmt.Printf("  Relayed Body: %s\n", snippet)
+			fmt.Printf("  Relayed Body:    %s (%d bytes)\n", snippet, len(output))
 			return nil
 		},
 	}

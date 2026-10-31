@@ -112,10 +112,10 @@ sequenceDiagram
     end
 
     rect rgb(245, 255, 245)
-    Note over CLI,Hist: Audit Logging & Injection
-    CLI->>Hist: Append Transmission (ID, Link, Prompt, Body, ...)
+    Note over CLI,Hist: Injection & Verified Audit Logging
     CLI->>Tgt: Deliver(ctx, Transmission)
-    Tgt-->>CLI: Injection Confirmation
+    Tgt-->>CLI: Injection Confirmation or Error
+    CLI->>Hist: Append Transmission (ID, Link, Prompt, Status, Error, ...)
     end
 
     CLI-->>Dev: Print Success Summary
@@ -218,6 +218,16 @@ type Adapter interface {
 }
 ```
 
+### 2.4 Concurrency Control & File Locking Invariants
+Since multiple agent sessions, git hooks, or background tasks can run `relay` CLI commands concurrently, `links.json` mutations are protected against race conditions and file corruption:
+1. **Cross-Process File Locking (`flock`)**:
+   - Every read-modify-write operation (`Create`, `Update`, `Delete`, `Get`, `List`) acquires an exclusive lock on `~/.config/relay/links.json.lock`.
+   - Implemented via `syscall.Flock(LOCK_EX)` on POSIX/Darwin (`flock_unix.go`) and `windows.LockFileEx` on Windows (`flock_windows.go`).
+   - The lock file is completely decoupled from the data file, ensuring file swaps during atomic updates never release active locks prematurely.
+2. **Atomic Writes**:
+   - New content is marshaled and flushed to a unique temporary file: `links.json.<pid>.<nanotime>.tmp`.
+   - Atomically replaces `links.json` via filesystem `rename`, preventing partial reads.
+
 ---
 
 ## 3. Agent Adapters & Reverse-Engineered Mechanics
@@ -243,10 +253,10 @@ type Adapter interface {
   - Checks if `not_fully_idle == 1` in `conversation_summaries.db`.
 - **Language Server & CSRF Discovery**:
   - Paired environment variables: `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN`.
-  - Dynamic discovery via Linux `/proc`: matches `language_server` process with `--app_data_dir antigravity`, inspects `/proc/<pid>/fd` for owned socket inodes, probes `/healthz`, and caches credentials with TTL.
-  - Strictly **fail-closed**: never probes unfiltered system listening ports if socket inodes cannot be read.
+  - Dynamic discovery via Linux `/proc`: requires binary name `language_server` and command line matching `antigravity`, inspects `/proc/<pid>/fd` for owned socket inodes, probes `/healthz`, and caches credentials with TTL.
+  - Strictly **fail-closed**: never probes unfiltered system listening ports if socket inodes cannot be verified.
 - **Message Injection (Reactive Wakeup)**:
-  - Dispatches to Antigravity Language Server JSON-RPC or native CLI binary:
+  - Dispatches to Antigravity native CLI binary:
     ```bash
     ~/.gemini/antigravity/bin/agentapi send-message <conversation_id> <formatted_content>
     ```
@@ -256,15 +266,16 @@ type Adapter interface {
   - Qoder Remote Host runs natively in the local POSIX environment (Linux WSL/SSH/macOS).
   - Sessions are stored under `~/.qoder/projects/<workspace-slug>/` where `<workspace-slug>` replaces `/` with `-` (e.g. `-home-kamus-CascadeProjects-relay`).
 - **Discovery**:
-  - **Desktop Database**: Automatically loads authoritative titles and workspace CWD from Qoder's `main.sqlite` database across Linux, macOS, and Windows/WSL AppData paths.
+  - **Desktop Database**: Automatically loads authoritative titles and workspace CWD from Qoder's `main.sqlite` database across Linux, macOS, and Windows/WSL AppData paths (cached per CLI execution). Override path via `QODER_DB_PATH`.
   - **File-based**: Reads metadata from `.jsonl` files in project directories.
 - **Short & Exact ID Resolution**:
   - Multi-match prefix returns `ErrAmbiguousSession`.
   - Exact session UUID existing in multiple distinct project directories returns `ErrAmbiguousSession`.
-- **Turn Extraction**:
+- **Turn Extraction & Stale-Turn Guard**:
   - Reads `~/.qoder/projects/<workspace-slug>/<session-id>.jsonl`.
   - Locates the active leaf uuid via `{"type":"active-leaf","sessionId":"...","leafUuid":"..."}`.
-  - Extracts the assistant turn `{"type":"assistant","uuid":"<leafUuid>","message":{"role":"assistant","content":[{"type":"text","text":"..."}]}}`, safely ignoring `<thinking>` tokens.
+  - If `active-leaf` is not an assistant message (e.g. pending user turn or in-flight step), immediately returns `ErrTurnInProgress` without silently falling back to stale historical rounds.
+  - Extracts the active assistant turn, safely ignoring `<thinking>` tokens.
 - **In-Progress Guard**:
   - Checks for active lease files in `~/.qoder/tasks/<session-id>/.task-locks/*.lease`.
   - Verifies `stop_reason == "end_turn"` in the active assistant turn.
@@ -275,9 +286,10 @@ type Adapter interface {
     ```
     *(Note: `-p` / `--print` instructs `qoder-worker-runtime` to run non-interactively without spawning a TTY session, and `<formatted_content>` is passed as the positional query argument).*
   - Binary discovery precedence:
-    1. `~/.qoder/remote/protocol-v1/installs/*/bin/qoder-worker-runtime`
-    2. PATH (`qodercli`)
-    3. PATH (`qoder`, excluding GUI launcher `~/.qoder/entry/qoder`)
+    1. Environment variable override: `QODER_CLI_PATH`
+    2. `~/.qoder/remote/protocol-v1/installs/*/bin/qoder-worker-runtime`
+    3. PATH (`qodercli`)
+    4. PATH (`qoder`, excluding GUI launcher `~/.qoder/entry/qoder`)
 
 ### 3.3 Relayed Message Injection Format
 To give the recipient agent clear provenance and actionable instructions, `Adapter.Deliver` formats the payload into a standard envelope before passing it to the target agent's CLI:

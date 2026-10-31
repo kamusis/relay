@@ -6,8 +6,8 @@ import (
 )
 
 // resolveLSConnection resolves the Antigravity Language Server address and CSRF token.
-// It prioritizes explicit environment variables (ANTIGRAVITY_LS_ADDRESS and ANTIGRAVITY_CSRF_TOKEN).
-// If either is missing, it dynamically discovers them from the running language_server process.
+// Explicit environment variables (ANTIGRAVITY_LS_ADDRESS and ANTIGRAVITY_CSRF_TOKEN) must be provided in pairs.
+// When neither is set, it discovers them from the running language_server process.
 func (a *Adapter) resolveLSConnection() (string, string, error) {
 	addr := os.Getenv("ANTIGRAVITY_LS_ADDRESS")
 	token := os.Getenv("ANTIGRAVITY_CSRF_TOKEN")

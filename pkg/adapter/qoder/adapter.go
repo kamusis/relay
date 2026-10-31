@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/kamusis/relay/pkg/adapter"
 	"github.com/mattn/go-runewidth"
@@ -23,8 +24,10 @@ type Config struct {
 
 // Adapter implements the adapter.Adapter interface for Qoder (QoderWork).
 type Adapter struct {
-	baseDir string
-	dbPath  string
+	baseDir   string
+	dbPath    string
+	dbCacheMu sync.Mutex
+	dbCache   map[string]dbSessionInfo
 }
 
 // New creates a new Qoder Adapter.
@@ -178,9 +181,12 @@ func (a *Adapter) locateSessionFile(sessionID string) (filePath string, slug str
 		wsMap := make(map[string]match)
 		for _, em := range exactMatches {
 			meta, err := readSessionMetadata(em.filePath)
+			if err != nil {
+				return "", "", fmt.Errorf("failed to read metadata for session at %s: %w", em.filePath, err)
+			}
 			ws := em.slug
-			if err == nil && len(meta.Workspaces) > 0 {
-				ws = meta.Workspaces[0]
+			if len(meta.Workspaces) > 0 {
+				ws = PathToSlug(meta.Workspaces[0])
 			}
 			wsMap[ws] = em
 		}
@@ -441,17 +447,22 @@ func (a *Adapter) GetLatestAssistantOutput(sessionID string) (string, error) {
 
 	// 1. Try active leaf first
 	if activeLeaf != "" {
-		if turn, ok := assistantTurns[activeLeaf]; ok {
-			if turn.StopReason != "" && turn.StopReason != "end_turn" {
-				return "", adapter.ErrTurnInProgress
-			}
-			if strings.TrimSpace(turn.Text) != "" {
-				return strings.TrimSpace(turn.Text), nil
-			}
+		turn, ok := assistantTurns[activeLeaf]
+		if !ok {
+			// Active leaf is not an assistant message (e.g. user prompt or ongoing tool execution).
+			// Refuse to silently fall back to historical turns from previous rounds.
+			return "", fmt.Errorf("%w: active turn %s is not a completed assistant response", adapter.ErrTurnInProgress, adapter.ShortID(activeLeaf))
 		}
+		if turn.StopReason != "" && turn.StopReason != "end_turn" {
+			return "", fmt.Errorf("%w: assistant turn %s is still generating (stop_reason: %s)", adapter.ErrTurnInProgress, adapter.ShortID(activeLeaf), turn.StopReason)
+		}
+		if strings.TrimSpace(turn.Text) == "" {
+			return "", fmt.Errorf("%w: assistant turn %s contains no text output", adapter.ErrNoOutputFound, adapter.ShortID(activeLeaf))
+		}
+		return strings.TrimSpace(turn.Text), nil
 	}
 
-	// 2. Fallback to the latest assistant turn that produced text
+	// 2. Legacy fallback only if session file completely lacks active-leaf marker
 	if lastAssistantWithText != "" {
 		turn := assistantTurns[lastAssistantWithText]
 		if turn.StopReason != "" && turn.StopReason != "end_turn" {

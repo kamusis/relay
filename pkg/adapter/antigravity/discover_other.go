@@ -22,7 +22,7 @@ func discoverLS() (string, string, error) {
 
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
-		if !strings.Contains(line, "language_server") || !strings.Contains(line, "--csrf_token") {
+		if !strings.Contains(line, "language_server") || !strings.Contains(line, "--csrf_token") || !strings.Contains(line, "antigravity") {
 			continue
 		}
 

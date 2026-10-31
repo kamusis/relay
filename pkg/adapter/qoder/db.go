@@ -108,22 +108,33 @@ func copyFile(src, dst string) error {
 // loadDBSessions reads session titles and cwd from Qoder desktop's main.sqlite database.
 // To avoid lock contention with running Qoder desktop instances and drvfs filesystem limitations in WSL,
 // it copies the database and wal files to a temporary directory before querying.
+// Results are cached in the Adapter instance for the lifetime of the CLI process.
 func (a *Adapter) loadDBSessions() map[string]dbSessionInfo {
+	a.dbCacheMu.Lock()
+	defer a.dbCacheMu.Unlock()
+
+	if a.dbCache != nil {
+		return a.dbCache
+	}
+
 	results := make(map[string]dbSessionInfo)
 
 	dbPath := a.findQoderDBPath()
 	if dbPath == "" {
+		a.dbCache = results
 		return results
 	}
 
 	tempDir, err := os.MkdirTemp("", "relay-qoder-db-*")
 	if err != nil {
+		a.dbCache = results
 		return results
 	}
 	defer os.RemoveAll(tempDir)
 
 	targetDB := filepath.Join(tempDir, "main.sqlite")
 	if err := copyFile(dbPath, targetDB); err != nil {
+		a.dbCache = results
 		return results
 	}
 	// Copy WAL and SHM files if they exist to include latest unflushed writes
@@ -132,12 +143,14 @@ func (a *Adapter) loadDBSessions() map[string]dbSessionInfo {
 
 	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=ro", targetDB))
 	if err != nil {
+		a.dbCache = results
 		return results
 	}
 	defer db.Close()
 
 	rows, err := db.Query("SELECT session_id, title, cwd, updated_at FROM chat_sessions WHERE title != ''")
 	if err != nil {
+		a.dbCache = results
 		return results
 	}
 	defer rows.Close()
@@ -168,5 +181,6 @@ func (a *Adapter) loadDBSessions() map[string]dbSessionInfo {
 		}
 	}
 
+	a.dbCache = results
 	return results
 }
