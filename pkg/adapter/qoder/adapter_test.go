@@ -35,7 +35,7 @@ func setupTestQoderDir(t *testing.T) string {
 
 func TestQoderAdapter(t *testing.T) {
 	baseDir := setupTestQoderDir(t)
-	ad := New(Config{BaseDir: baseDir})
+	ad := New(Config{BaseDir: baseDir, DBPath: ":none:"})
 
 	if ad.Type() != adapter.AgentQoder {
 		t.Errorf("expected type qoder, got %s", ad.Type())

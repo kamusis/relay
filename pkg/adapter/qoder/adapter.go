@@ -18,23 +18,35 @@ import (
 // Config configures the Qoder adapter paths.
 type Config struct {
 	BaseDir string // Defaults to ~/.qoder
+	DBPath  string // Optional path to main.sqlite; use ":none:" to disable DB lookup
 }
 
 // Adapter implements the adapter.Adapter interface for Qoder (QoderWork).
 type Adapter struct {
 	baseDir string
+	dbPath  string
 }
 
 // New creates a new Qoder Adapter.
 func New(cfg ...Config) *Adapter {
 	base := ""
-	if len(cfg) > 0 && cfg[0].BaseDir != "" {
-		base = cfg[0].BaseDir
-	} else {
+	db := ""
+	if len(cfg) > 0 {
+		if cfg[0].BaseDir != "" {
+			base = cfg[0].BaseDir
+		}
+		if cfg[0].DBPath != "" {
+			db = cfg[0].DBPath
+		}
+	}
+	if base == "" {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".qoder")
 	}
-	return &Adapter{baseDir: base}
+	return &Adapter{
+		baseDir: base,
+		dbPath:  db,
+	}
 }
 
 // Type returns the unique identifier for Qoder.
@@ -238,10 +250,19 @@ func (a *Adapter) GetSession(sessionID string) (*adapter.Session, error) {
 		primaryWS = meta.Workspaces[0]
 	}
 
+	title := meta.Title
+	dbSessions := a.loadDBSessions()
+	if dbSess, ok := dbSessions[meta.ID]; ok && dbSess.Title != "" {
+		title = dbSess.Title
+		if primaryWS == "" && dbSess.Cwd != "" {
+			primaryWS = dbSess.Cwd
+		}
+	}
+
 	return &adapter.Session{
 		ID:        meta.ID,
 		Agent:     adapter.AgentQoder,
-		Title:     meta.Title,
+		Title:     title,
 		Workspace: primaryWS,
 		UpdatedAt: meta.UpdatedAt,
 	}, nil
@@ -442,6 +463,7 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 	})
 
 	var sessions []adapter.Session
+	dbSessions := a.loadDBSessions()
 	for _, f := range fwt {
 		meta, err := readSessionMetadata(f.path)
 		if err != nil {
@@ -451,13 +473,22 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		if len(meta.Workspaces) > 0 {
 			primaryWS = meta.Workspaces[0]
 		}
+
+		title := meta.Title
+		if dbSess, ok := dbSessions[meta.ID]; ok && dbSess.Title != "" {
+			title = dbSess.Title
+			if primaryWS == "" && dbSess.Cwd != "" {
+				primaryWS = dbSess.Cwd
+			}
+		}
+
 		if workspace == adapter.WorkspaceNone && primaryWS != "" {
 			continue
 		}
 		sessions = append(sessions, adapter.Session{
 			ID:        meta.ID,
 			Agent:     adapter.AgentQoder,
-			Title:     meta.Title,
+			Title:     title,
 			Workspace: primaryWS,
 			UpdatedAt: meta.UpdatedAt,
 		})

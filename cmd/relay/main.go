@@ -287,28 +287,26 @@ func newLinkCmd() *cobra.Command {
 				sessA := l.SessionA
 				sessB := l.SessionB
 
-				if refresh {
-					// Validate & self-heal metadata
-					if adA, err := registry.Get(sessA.Agent); err == nil {
-						if fresh, err := adA.GetSession(sessA.ID); err == nil {
-							sessA.Title = fresh.Title
-							sessA.Workspace = fresh.Workspace
-							l.SessionA = sessA
-						} else {
-							sessA.Title = "[NOT FOUND]"
-						}
+				// Automatically refresh & self-heal endpoint metadata
+				if adA, err := registry.Get(sessA.Agent); err == nil {
+					if fresh, err := adA.GetSession(sessA.ID); err == nil {
+						sessA.Title = fresh.Title
+						sessA.Workspace = fresh.Workspace
+						l.SessionA = sessA
+					} else if refresh {
+						sessA.Title = "[NOT FOUND]"
 					}
-					if adB, err := registry.Get(sessB.Agent); err == nil {
-						if fresh, err := adB.GetSession(sessB.ID); err == nil {
-							sessB.Title = fresh.Title
-							sessB.Workspace = fresh.Workspace
-							l.SessionB = sessB
-						} else {
-							sessB.Title = "[NOT FOUND]"
-						}
-					}
-					_ = store.Update(l)
 				}
+				if adB, err := registry.Get(sessB.Agent); err == nil {
+					if fresh, err := adB.GetSession(sessB.ID); err == nil {
+						sessB.Title = fresh.Title
+						sessB.Workspace = fresh.Workspace
+						l.SessionB = sessB
+					} else if refresh {
+						sessB.Title = "[NOT FOUND]"
+					}
+				}
+				_ = store.Update(l)
 
 				lastRelayStr := "-"
 				if histStore != nil {
