@@ -12,4 +12,7 @@ var (
 
 	// ErrNoOutputFound is returned when a session has no assistant response available to relay.
 	ErrNoOutputFound = errors.New("no assistant output available to relay")
+
+	// ErrAmbiguousSession is returned when a short session ID matches multiple sessions.
+	ErrAmbiguousSession = errors.New("ambiguous session ID matches multiple sessions")
 )

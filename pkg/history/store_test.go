@@ -20,6 +20,7 @@ func TestHistoryStore(t *testing.T) {
 		ToSession:   "session-2",
 		UserPrompt:  "review this",
 		Body:        "body 1",
+		Status:      adapter.TransmissionDelivered,
 	}
 
 	t2 := &adapter.Transmission{
@@ -30,6 +31,8 @@ func TestHistoryStore(t *testing.T) {
 		ToSession:   "session-1",
 		UserPrompt:  "fix this",
 		Body:        "body 2",
+		Status:      adapter.TransmissionFailed,
+		Error:       "agent process terminated unexpectedly",
 	}
 
 	t3 := &adapter.Transmission{
@@ -92,5 +95,16 @@ func TestHistoryStore(t *testing.T) {
 	}
 	if got.ID != t1.ID {
 		t.Errorf("expected id %s, got %s", t1.ID, got.ID)
+	}
+	if got.Status != adapter.TransmissionDelivered {
+		t.Errorf("expected status delivered, got %s", got.Status)
+	}
+
+	gotFailed, err := store.Get(t2.ID[:8])
+	if err != nil {
+		t.Fatalf("failed to get t2 by prefix: %v", err)
+	}
+	if gotFailed.Status != adapter.TransmissionFailed || gotFailed.Error != "agent process terminated unexpectedly" {
+		t.Errorf("expected failed status with error, got status=%s err=%s", gotFailed.Status, gotFailed.Error)
 	}
 }

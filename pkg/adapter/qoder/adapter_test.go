@@ -1,6 +1,7 @@
 package qoder
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,6 +30,15 @@ func setupTestQoderDir(t *testing.T) string {
 	if err := os.WriteFile(jsonlPath, []byte(lines), 0o600); err != nil {
 		t.Fatalf("failed to write test jsonl: %v", err)
 	}
+
+	// Create two ambiguous sessions
+	ambig1 := filepath.Join(projDir, "bbbb1111-7024-49d8-a9c4-b2a89629f705.jsonl")
+	ambig2 := filepath.Join(projDir, "bbbb2222-7024-49d8-a9c4-b2a89629f705.jsonl")
+	ambigContent := `{"type":"workspace-directories","directories":["/tmp/test-project"]}
+{"type":"last-prompt","lastPrompt":"Ambiguous"}
+`
+	_ = os.WriteFile(ambig1, []byte(ambigContent), 0o600)
+	_ = os.WriteFile(ambig2, []byte(ambigContent), 0o600)
 
 	return base
 }
@@ -82,8 +92,8 @@ func TestQoderAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
-	if len(list) != 1 {
-		t.Errorf("expected 1 session, got %d", len(list))
+	if len(list) != 3 {
+		t.Errorf("expected 3 sessions, got %d", len(list))
 	}
 
 	// 6. ListSessions filtered by workspace
@@ -91,7 +101,13 @@ func TestQoderAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list sessions by ws: %v", err)
 	}
-	if len(listWS) != 1 {
-		t.Errorf("expected 1 session, got %d", len(listWS))
+	if len(listWS) != 3 {
+		t.Errorf("expected 3 sessions, got %d", len(listWS))
+	}
+
+	// 7. Ambiguous short ID returns ErrAmbiguousSession
+	_, err = ad.GetSession("bbbb")
+	if !errors.Is(err, adapter.ErrAmbiguousSession) {
+		t.Fatalf("expected ErrAmbiguousSession for ambiguous prefix, got %v", err)
 	}
 }

@@ -117,36 +117,83 @@ func (a *Adapter) GetSession(sessionID string) (*adapter.Session, error) {
 	query := `
 		SELECT conversation_id, title, workspace_uris, last_modified_time, not_fully_idle, killed
 		FROM conversation_summaries
-		WHERE conversation_id = ? OR conversation_id LIKE ?
-		LIMIT 1;
+		WHERE conversation_id = ? OR conversation_id LIKE ?;
 	`
-	var (
+	rows, err := db.Query(query, sessionID, sessionID+"%")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query antigravity session: %w", err)
+	}
+	defer rows.Close()
+
+	type sessionRow struct {
 		id           string
 		title        string
 		wsRaw        string
 		lastModRaw   string
 		notFullyIdle int
 		killed       int
-	)
+	}
 
-	err = db.QueryRow(query, sessionID, sessionID+"%").Scan(&id, &title, &wsRaw, &lastModRaw, &notFullyIdle, &killed)
-	if err == sql.ErrNoRows {
+	var allMatches []sessionRow
+	for rows.Next() {
+		var r sessionRow
+		if err := rows.Scan(&r.id, &r.title, &r.wsRaw, &r.lastModRaw, &r.notFullyIdle, &r.killed); err != nil {
+			return nil, fmt.Errorf("failed to scan session row: %w", err)
+		}
+		allMatches = append(allMatches, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error reading session rows: %w", err)
+	}
+
+	if len(allMatches) == 0 {
 		return nil, fmt.Errorf("%w: %s", adapter.ErrSessionNotFound, sessionID)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query antigravity session: %w", err)
+
+	// 1. Exact match check
+	for _, r := range allMatches {
+		if r.id == sessionID {
+			if r.killed != 0 {
+				return nil, fmt.Errorf("%w: session %s was terminated/killed", adapter.ErrSessionNotFound, r.id)
+			}
+			return &adapter.Session{
+				ID:        r.id,
+				Agent:     adapter.AgentAntigravity,
+				Title:     r.title,
+				Workspace: parseWorkspaceURI(r.wsRaw),
+				UpdatedAt: parseTime(r.lastModRaw),
+			}, nil
+		}
 	}
 
-	if killed != 0 {
-		return nil, fmt.Errorf("%w: session %s was terminated/killed", adapter.ErrSessionNotFound, id)
+	// 2. Prefix match: filter to active (killed == 0)
+	var activeMatches []sessionRow
+	for _, r := range allMatches {
+		if r.killed == 0 {
+			activeMatches = append(activeMatches, r)
+		}
 	}
 
+	if len(activeMatches) == 0 {
+		return nil, fmt.Errorf("%w: session matching prefix '%s' was terminated/killed", adapter.ErrSessionNotFound, sessionID)
+	}
+
+	if len(activeMatches) > 1 {
+		var matchedIDs []string
+		for _, m := range activeMatches {
+			matchedIDs = append(matchedIDs, adapter.ShortID(m.id))
+		}
+		return nil, fmt.Errorf("%w: short ID prefix '%s' matches %d antigravity sessions: %s",
+			adapter.ErrAmbiguousSession, sessionID, len(activeMatches), strings.Join(matchedIDs, ", "))
+	}
+
+	match := activeMatches[0]
 	return &adapter.Session{
-		ID:        id,
+		ID:        match.id,
 		Agent:     adapter.AgentAntigravity,
-		Title:     title,
-		Workspace: parseWorkspaceURI(wsRaw),
-		UpdatedAt: parseTime(lastModRaw),
+		Title:     match.title,
+		Workspace: parseWorkspaceURI(match.wsRaw),
+		UpdatedAt: parseTime(match.lastModRaw),
 	}, nil
 }
 

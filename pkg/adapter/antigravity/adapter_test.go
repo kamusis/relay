@@ -2,6 +2,7 @@ package antigravity
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,6 +41,8 @@ func setupTestAntigravityDir(t *testing.T) string {
 		('11112222-3333-4444-5555-666677778888', 'Session One', '["file:///tmp/workspace-a"]', '2026-10-31 10:00:00', 0, 0),
 		('99998888-7777-6666-5555-444433332222', 'Session Two', '["file:///tmp/workspace-b"]', '2026-10-31 11:00:00', 0, 0),
 		('44445555-6666-7777-8888-999900001111', 'Scratch Session', '', '2026-10-31 08:00:00', 0, 0),
+		('aaaa1111-0000-0000-0000-000000000001', 'Ambiguous A', '["file:///tmp/workspace-a"]', '2026-10-31 12:00:00', 0, 0),
+		('aaaa2222-0000-0000-0000-000000000002', 'Ambiguous B', '["file:///tmp/workspace-a"]', '2026-10-31 12:01:00', 0, 0),
 		('deadbeef-0000-0000-0000-000000000000', 'Dead Session', '["file:///tmp/workspace-c"]', '2026-10-31 09:00:00', 0, 1);
 	`)
 	if err != nil {
@@ -113,8 +116,8 @@ func TestAntigravityAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
-	if len(list) != 3 {
-		t.Errorf("expected 3 active sessions, got %d", len(list))
+	if len(list) != 5 {
+		t.Errorf("expected 5 active sessions, got %d", len(list))
 	}
 
 	// 6. ListSessions with workspace filter
@@ -133,5 +136,11 @@ func TestAntigravityAdapter(t *testing.T) {
 	}
 	if len(listNone) != 1 || listNone[0].Title != "Scratch Session" {
 		t.Errorf("expected 1 scratch session, got %+v", listNone)
+	}
+
+	// 8. Ambiguous short ID returns ErrAmbiguousSession
+	_, err = ad.GetSession("aaaa")
+	if !errors.Is(err, adapter.ErrAmbiguousSession) {
+		t.Fatalf("expected ErrAmbiguousSession for ambiguous prefix, got %v", err)
 	}
 }

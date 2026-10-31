@@ -103,17 +103,27 @@ func (l *Link) ResolveEndpoints(targetIdent string) (source, target *Session, er
 	return &l.SessionA, &l.SessionB, nil
 }
 
+// TransmissionStatus represents the delivery outcome of a transmission.
+type TransmissionStatus string
+
+const (
+	TransmissionDelivered TransmissionStatus = "delivered"
+	TransmissionFailed    TransmissionStatus = "failed"
+)
+
 // Transmission represents an audited historical record of a cross-agent relay.
 type Transmission struct {
-	ID          string    `json:"id"`                    // Unique transmission event UUID
-	LinkName    string    `json:"link_name"`             // Link channel name (e.g. "moc-qoder")
-	FromAgent   AgentType `json:"from_agent"`            // Sender agent (e.g. "qoder")
-	FromSession string    `json:"from_session"`          // Sender session ID
-	ToAgent     AgentType `json:"to_agent"`              // Recipient agent (e.g. "antigravity")
-	ToSession   string    `json:"to_session"`            // Recipient session ID
-	UserPrompt  string    `json:"user_prompt,omitempty"` // User-supplied directive (e.g. "按方案 a 修复")
-	Body        string    `json:"body"`                  // Extracted markdown output from source agent
-	Timestamp   int64     `json:"timestamp"`             // Event Unix timestamp
+	ID          string             `json:"id"`                    // Unique transmission event UUID
+	LinkName    string             `json:"link_name"`             // Link channel name (e.g. "moc-qoder")
+	FromAgent   AgentType          `json:"from_agent"`            // Sender agent (e.g. "qoder")
+	FromSession string             `json:"from_session"`          // Sender session ID
+	ToAgent     AgentType          `json:"to_agent"`              // Recipient agent (e.g. "antigravity")
+	ToSession   string             `json:"to_session"`            // Recipient session ID
+	UserPrompt  string             `json:"user_prompt,omitempty"` // User-supplied directive (e.g. "按方案 a 修复")
+	Body        string             `json:"body"`                  // Extracted markdown output from source agent
+	Timestamp   int64              `json:"timestamp"`             // Event Unix timestamp
+	Status      TransmissionStatus `json:"status,omitempty"`      // Delivery outcome: "delivered" or "failed"
+	Error       string             `json:"error,omitempty"`       // Delivery error description if failed
 }
 
 // FormatPayload formats the transmission into a structured message envelope for the target agent.

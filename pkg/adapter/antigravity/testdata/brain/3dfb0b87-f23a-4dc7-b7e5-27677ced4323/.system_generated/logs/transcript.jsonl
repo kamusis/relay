@@ -1,0 +1,6 @@
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:22:02Z","content":"<USER_REQUEST>\n准备开始测试relay，该会话先创建\n</USER_REQUEST>"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T14:22:02Z","input_tokens":4258,"cache_read_tokens":20393,"output_tokens":406,"thinking":"Planning step 1","tool_calls":[{"name":"read_file","args":{"Path":"/home/kamus/file.txt"}}]}
+{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-10-31T14:22:07Z","content":"Truncated content here...","truncated_fields":["content"]}
+{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T14:22:15Z","content":"First model response"}
+{"step_index":4,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:23:00Z","content":"先不用作别的"}
+{"step_index":5,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T14:23:05Z","content":"Truncated final assistant reply","truncated_fields":["content"]}

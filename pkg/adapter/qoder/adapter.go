@@ -113,6 +113,15 @@ func (a *Adapter) locateSessionFile(sessionID string) (filePath string, slug str
 
 	sessionIDClean := strings.TrimSpace(sessionID)
 
+	type match struct {
+		filePath  string
+		slug      string
+		sessionID string
+	}
+
+	var exactMatches []match
+	prefixMatches := make(map[string]match) // sessionID -> match
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -128,10 +137,38 @@ func (a *Adapter) locateSessionFile(sessionID string) (filePath string, slug str
 				continue
 			}
 			baseName := strings.TrimSuffix(f.Name(), ".jsonl")
-			if baseName == sessionIDClean || strings.HasPrefix(baseName, sessionIDClean) {
-				return filepath.Join(projPath, f.Name()), entry.Name(), nil
+			m := match{
+				filePath:  filepath.Join(projPath, f.Name()),
+				slug:      entry.Name(),
+				sessionID: baseName,
+			}
+			if baseName == sessionIDClean {
+				exactMatches = append(exactMatches, m)
+			} else if strings.HasPrefix(baseName, sessionIDClean) {
+				prefixMatches[baseName] = m
 			}
 		}
+	}
+
+	// 1. Exact match takes precedence
+	if len(exactMatches) > 0 {
+		return exactMatches[0].filePath, exactMatches[0].slug, nil
+	}
+
+	// 2. Prefix match
+	if len(prefixMatches) == 1 {
+		for _, m := range prefixMatches {
+			return m.filePath, m.slug, nil
+		}
+	}
+
+	if len(prefixMatches) > 1 {
+		var matchedIDs []string
+		for id := range prefixMatches {
+			matchedIDs = append(matchedIDs, adapter.ShortID(id))
+		}
+		return "", "", fmt.Errorf("%w: short ID prefix '%s' matches %d qoder sessions: %s",
+			adapter.ErrAmbiguousSession, sessionID, len(prefixMatches), strings.Join(matchedIDs, ", "))
 	}
 
 	return "", "", fmt.Errorf("%w: qoder session %s not found", adapter.ErrSessionNotFound, sessionID)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -405,6 +406,9 @@ func parseAndResolveEndpoint(ep string) (*adapter.Session, error) {
 	sessID := strings.TrimSpace(parts[1])
 	sess, err := ad.GetSession(sessID)
 	if err != nil {
+		if errors.Is(err, adapter.ErrAmbiguousSession) {
+			return nil, fmt.Errorf("failed to resolve endpoint '%s': %w", ep, err)
+		}
 		return nil, fmt.Errorf("agent %s session '%s' not found: %w", agType, sessID, err)
 	}
 	return sess, nil
@@ -513,21 +517,31 @@ func newSendCmd() *cobra.Command {
 				Timestamp:   time.Now().Unix(),
 			}
 
-			// 6. Audit Log persistence
-			histStore, err := history.NewDefaultStore()
-			if err == nil {
-				_ = histStore.Append(&tx)
-			}
-
-			// 7. Inject payload into target session
+			// 6. Inject payload into target session
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
 			fmt.Printf("Relaying latest output from %s (%s) -> %s (%s)...\n",
 				srcSess.Agent, adapter.ShortID(freshSrc.ID), tgtSess.Agent, adapter.ShortID(freshTgt.ID))
 
-			if err := tgtAdapter.Deliver(ctx, tx); err != nil {
-				return fmt.Errorf("delivery failed to %s: %w", tgtSess.Agent, err)
+			deliverErr := tgtAdapter.Deliver(ctx, tx)
+			if deliverErr != nil {
+				tx.Status = adapter.TransmissionFailed
+				tx.Error = deliverErr.Error()
+			} else {
+				tx.Status = adapter.TransmissionDelivered
+			}
+
+			// 7. Audit Log persistence
+			histStore, err := history.NewDefaultStore()
+			if err == nil {
+				if appendErr := histStore.Append(&tx); appendErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to persist audit log: %v\n", appendErr)
+				}
+			}
+
+			if deliverErr != nil {
+				return fmt.Errorf("delivery failed to %s: %w", tgtSess.Agent, deliverErr)
 			}
 
 			// Print snippet preview
@@ -574,6 +588,14 @@ func newLogCmd() *cobra.Command {
 					return err
 				}
 				fmt.Printf("Transmission: %s\n", tx.ID)
+				statusStr := string(tx.Status)
+				if statusStr == "" {
+					statusStr = "delivered"
+				}
+				fmt.Printf("Status:       %s\n", statusStr)
+				if tx.Error != "" {
+					fmt.Printf("Error:        %s\n", tx.Error)
+				}
 				fmt.Printf("Link:         %s\n", tx.LinkName)
 				fmt.Printf("Direction:    %s (%s) -> %s (%s)\n",
 					tx.FromAgent, adapter.ShortID(tx.FromSession), tx.ToAgent, adapter.ShortID(tx.ToSession))
@@ -605,26 +627,32 @@ func newLogCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("%s  %s  %s  %s  %s\n",
+			fmt.Printf("%s  %s  %s  %s  %s  %s\n",
 				runewidth.FillRight("TIME", 19),
 				runewidth.FillRight("LINK", 12),
 				runewidth.FillRight("DIRECTION", 15),
-				runewidth.FillRight("PROMPT", 22),
+				runewidth.FillRight("STATUS", 10),
+				runewidth.FillRight("PROMPT", 20),
 				"BODY SNIPPET",
 			)
 
 			for _, tx := range records {
 				tStr := time.Unix(tx.Timestamp, 0).Format("2006-01-02 15:04:05")
 				dir := fmt.Sprintf("%s -> %s", tx.FromAgent, tx.ToAgent)
-				prompt := runewidth.Truncate(tx.UserPrompt, 20, "...")
+				statusStr := string(tx.Status)
+				if statusStr == "" {
+					statusStr = "delivered"
+				}
+				prompt := runewidth.Truncate(tx.UserPrompt, 18, "...")
 				snippet := strings.ReplaceAll(tx.Body, "\n", " ")
-				snippet = runewidth.Truncate(snippet, 40, "...")
+				snippet = runewidth.Truncate(snippet, 35, "...")
 
-				fmt.Printf("%s  %s  %s  %s  %s\n",
+				fmt.Printf("%s  %s  %s  %s  %s  %s\n",
 					runewidth.FillRight(tStr, 19),
 					runewidth.FillRight(tx.LinkName, 12),
 					runewidth.FillRight(dir, 15),
-					runewidth.FillRight(prompt, 22),
+					runewidth.FillRight(statusStr, 10),
+					runewidth.FillRight(prompt, 20),
 					snippet,
 				)
 			}
