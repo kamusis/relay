@@ -322,8 +322,13 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		}
 
 		ws := parseWorkspaceURI(wsRaw)
-		if workspace != "" && ws != "" {
-			if !strings.EqualFold(ws, workspaceClean) && !strings.HasPrefix(ws, workspaceClean) {
+		if workspace != "" {
+			if ws == "" {
+				continue
+			}
+			isExact := strings.EqualFold(ws, workspaceClean)
+			isSubdir := strings.HasPrefix(ws, workspaceClean+string(filepath.Separator))
+			if !isExact && !isSubdir {
 				continue
 			}
 		}

@@ -39,6 +39,7 @@ func setupTestAntigravityDir(t *testing.T) string {
 		INSERT INTO conversation_summaries VALUES 
 		('11112222-3333-4444-5555-666677778888', 'Session One', '["file:///tmp/workspace-a"]', '2026-10-31 10:00:00', 0, 0),
 		('99998888-7777-6666-5555-444433332222', 'Session Two', '["file:///tmp/workspace-b"]', '2026-10-31 11:00:00', 0, 0),
+		('44445555-6666-7777-8888-999900001111', 'Scratch Session', '', '2026-10-31 08:00:00', 0, 0),
 		('deadbeef-0000-0000-0000-000000000000', 'Dead Session', '["file:///tmp/workspace-c"]', '2026-10-31 09:00:00', 0, 1);
 	`)
 	if err != nil {
@@ -107,13 +108,13 @@ func TestAntigravityAdapter(t *testing.T) {
 		t.Errorf("expected 'latest model response to relay', got '%s'", output)
 	}
 
-	// 5. ListSessions without workspace filter
+	// 5. ListSessions without workspace filter includes scratch session
 	list, err := ad.ListSessions("", 10)
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
-	if len(list) != 2 {
-		t.Errorf("expected 2 active sessions, got %d", len(list))
+	if len(list) != 3 {
+		t.Errorf("expected 3 active sessions, got %d", len(list))
 	}
 
 	// 6. ListSessions with workspace filter
