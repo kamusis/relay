@@ -518,7 +518,13 @@ func newSendCmd() *cobra.Command {
 			}
 
 			// 6. Inject payload into target session
-			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+			timeout := 300 * time.Second
+			if custom := os.Getenv("RELAY_DELIVERY_TIMEOUT"); custom != "" {
+				if d, err := time.ParseDuration(custom); err == nil && d > 0 {
+					timeout = d
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
 			fmt.Printf("Relaying latest output from %s (%s) -> %s (%s)...\n",
@@ -528,6 +534,9 @@ func newSendCmd() *cobra.Command {
 			deliverErr := tgtAdapter.Deliver(ctx, tx)
 			if deliverErr != nil {
 				tx.Status = adapter.TransmissionFailed
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					deliverErr = fmt.Errorf("execution timed out after %v", timeout)
+				}
 				tx.Error = deliverErr.Error()
 			} else {
 				tx.Status = adapter.TransmissionDelivered

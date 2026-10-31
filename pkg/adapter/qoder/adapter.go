@@ -483,11 +483,14 @@ func (a *Adapter) Deliver(ctx context.Context, t adapter.Transmission) error {
 	}
 
 	payload := t.FormatPayload()
-	// qodercli -w <workspace> -r <session-id> -p "<prompt>"
+	// qodercli -w <workspace> -r <session-id> --dangerously-skip-permissions -p "<prompt>"
 	// -p stands for --print (non-interactive), prompt is passed as query positional argument.
-	cmd := exec.CommandContext(ctx, cliPath, "-w", ws, "-r", sess.ID, "-p", payload)
+	cmd := exec.CommandContext(ctx, cliPath, "-w", ws, "-r", sess.ID, "--dangerously-skip-permissions", "-p", payload)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("qoder execution timed out (context deadline exceeded)")
+		}
 		return fmt.Errorf("qoder delivery failed: %s: %w", string(out), err)
 	}
 	return nil
