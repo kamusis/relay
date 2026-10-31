@@ -497,7 +497,7 @@ func newSendCmd() *cobra.Command {
 			// 4. Extract latest assistant output from source
 			output, err := srcAdapter.GetLatestAssistantOutput(freshSrc.ID)
 			if err != nil {
-				if err == adapter.ErrTurnInProgress {
+				if errors.Is(err, adapter.ErrTurnInProgress) {
 					return fmt.Errorf("source agent '%s' (session %s) is currently busy generating output\nHint: please wait for the turn to complete before relaying",
 						srcSess.Agent, adapter.ShortID(freshSrc.ID))
 				}
@@ -591,7 +591,7 @@ func newLogCmd() *cobra.Command {
 				fmt.Printf("Transmission: %s\n", tx.ID)
 				statusStr := string(tx.Status)
 				if statusStr == "" {
-					statusStr = "delivered"
+					statusStr = "-"
 				}
 				fmt.Printf("Status:       %s\n", statusStr)
 				if tx.Error != "" {
@@ -642,7 +642,7 @@ func newLogCmd() *cobra.Command {
 				dir := fmt.Sprintf("%s -> %s", tx.FromAgent, tx.ToAgent)
 				statusStr := string(tx.Status)
 				if statusStr == "" {
-					statusStr = "delivered"
+					statusStr = "-"
 				}
 				prompt := runewidth.Truncate(tx.UserPrompt, 18, "...")
 				snippet := strings.ReplaceAll(tx.Body, "\n", " ")

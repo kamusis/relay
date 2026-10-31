@@ -12,27 +12,18 @@ func (a *Adapter) resolveLSConnection() (string, string, error) {
 	addr := os.Getenv("ANTIGRAVITY_LS_ADDRESS")
 	token := os.Getenv("ANTIGRAVITY_CSRF_TOKEN")
 
+	// If both explicit environment variables are provided, use them directly
 	if addr != "" && token != "" {
 		return addr, token, nil
 	}
-
-	discoveredAddr, discoveredToken, err := discoverLS()
-	if err != nil {
-		if addr == "" && token == "" {
-			return "", "", fmt.Errorf("antigravity language_server not discovered and environment variables not set: %w", err)
-		}
-		if addr == "" {
-			return "", "", fmt.Errorf("ANTIGRAVITY_LS_ADDRESS is not set and auto-discovery failed: %w", err)
-		}
-		return "", "", fmt.Errorf("ANTIGRAVITY_CSRF_TOKEN is not set and auto-discovery failed: %w", err)
+	// Prevent mismatched pairing between partial env vars and auto-discovery
+	if addr != "" && token == "" {
+		return "", "", fmt.Errorf("ANTIGRAVITY_LS_ADDRESS is set but ANTIGRAVITY_CSRF_TOKEN is missing")
+	}
+	if addr == "" && token != "" {
+		return "", "", fmt.Errorf("ANTIGRAVITY_CSRF_TOKEN is set but ANTIGRAVITY_LS_ADDRESS is missing")
 	}
 
-	if addr == "" {
-		addr = discoveredAddr
-	}
-	if token == "" {
-		token = discoveredToken
-	}
-
-	return addr, token, nil
+	// Auto-discovery
+	return discoverLS()
 }

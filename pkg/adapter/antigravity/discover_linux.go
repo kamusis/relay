@@ -12,12 +12,43 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+var (
+	lsCacheMu     sync.Mutex
+	cachedLSAddr  string
+	cachedLSToken string
+	cachedExpiry  time.Time
 )
 
 // discoverLS scans /proc on Linux to detect a running Antigravity language_server process,
 // extract its CSRF token from command line flags, and probe its listening TCP ports.
+// Strictly fails closed: never scans arbitrary system ports without verified socket inodes.
 func discoverLS() (string, string, error) {
+	lsCacheMu.Lock()
+	if cachedLSAddr != "" && time.Now().Before(cachedExpiry) {
+		addr, token := cachedLSAddr, cachedLSToken
+		lsCacheMu.Unlock()
+
+		// Quick verification of cached connection
+		client := &http.Client{Timeout: 50 * time.Millisecond}
+		resp, err := client.Get(fmt.Sprintf("http://%s/healthz", addr))
+		if err == nil {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK && bytes.Contains(body, []byte("ok")) {
+				return addr, token, nil
+			}
+		}
+		// Cache expired or unresponsive, clear cache
+		lsCacheMu.Lock()
+		cachedLSAddr = ""
+		cachedLSToken = ""
+	}
+	lsCacheMu.Unlock()
+
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return "", "", fmt.Errorf("failed to read /proc: %w", err)
@@ -38,13 +69,23 @@ func discoverLS() (string, string, error) {
 		}
 
 		args := bytes.Split(cmdlineBytes, []byte{0})
-		isLS := false
+		if len(args) == 0 {
+			continue
+		}
+
+		// Verify binary is Antigravity language_server
+		binName := filepath.Base(string(args[0]))
+		if !strings.Contains(binName, "language_server") {
+			continue
+		}
+
+		isAntigravity := false
 		csrfToken := ""
 
 		for i, arg := range args {
 			argStr := string(arg)
-			if strings.Contains(argStr, "language_server") || strings.Contains(argStr, "antigravity") {
-				isLS = true
+			if strings.Contains(argStr, "antigravity") {
+				isAntigravity = true
 			}
 			if argStr == "--csrf_token" && i+1 < len(args) {
 				csrfToken = string(args[i+1])
@@ -53,34 +94,43 @@ func discoverLS() (string, string, error) {
 			}
 		}
 
-		if !isLS || csrfToken == "" {
+		if !isAntigravity || csrfToken == "" {
 			continue
 		}
 
-		// Collect socket inodes owned by this process
+		// Collect socket inodes strictly owned by this PID
 		socketInodes := make(map[string]bool)
 		fdDir := filepath.Join("/proc", pidStr, "fd")
 		fdEntries, err := os.ReadDir(fdDir)
-		if err == nil {
-			for _, fe := range fdEntries {
-				target, err := os.Readlink(filepath.Join(fdDir, fe.Name()))
-				if err == nil && strings.HasPrefix(target, "socket:[") && strings.HasSuffix(target, "]") {
-					inode := target[8 : len(target)-1]
-					socketInodes[inode] = true
-				}
+		if err != nil || len(fdEntries) == 0 {
+			// Fail closed: cannot inspect process sockets
+			continue
+		}
+
+		for _, fe := range fdEntries {
+			target, err := os.Readlink(filepath.Join(fdDir, fe.Name()))
+			if err == nil && strings.HasPrefix(target, "socket:[") && strings.HasSuffix(target, "]") {
+				inode := target[8 : len(target)-1]
+				socketInodes[inode] = true
 			}
 		}
 
-		// Find candidate listening ports from /proc/<pid>/net/tcp and /proc/<pid>/net/tcp6
+		// Must have at least one socket owned by process; never fall back to unfiltered scan
+		if len(socketInodes) == 0 {
+			continue
+		}
+
+		// Strictly scan process-specific or system tcp filtered ONLY by the process's socket inodes
 		ports := findListeningPorts(filepath.Join("/proc", pidStr, "net", "tcp"), socketInodes)
 		ports = append(ports, findListeningPorts(filepath.Join("/proc", pidStr, "net", "tcp6"), socketInodes)...)
-
-		// Also check global /proc/net/tcp as fallback if process net/tcp had no matches
 		if len(ports) == 0 {
 			ports = findListeningPorts("/proc/net/tcp", socketInodes)
 		}
+		if len(ports) == 0 {
+			continue
+		}
 
-		// Probe candidate ports for /healthz endpoint
+		// Probe candidate ports for /healthz endpoint (GET without sensitive tokens)
 		client := &http.Client{
 			Timeout: 100 * time.Millisecond,
 		}
@@ -99,7 +149,15 @@ func discoverLS() (string, string, error) {
 			resp.Body.Close()
 
 			if resp.StatusCode == http.StatusOK && bytes.Contains(body, []byte("ok")) {
-				return fmt.Sprintf("localhost:%d", port), csrfToken, nil
+				addr := fmt.Sprintf("localhost:%d", port)
+
+				lsCacheMu.Lock()
+				cachedLSAddr = addr
+				cachedLSToken = csrfToken
+				cachedExpiry = time.Now().Add(30 * time.Second)
+				lsCacheMu.Unlock()
+
+				return addr, csrfToken, nil
 			}
 		}
 	}
@@ -108,6 +166,10 @@ func discoverLS() (string, string, error) {
 }
 
 func findListeningPorts(tcpPath string, socketInodes map[string]bool) []int {
+	if len(socketInodes) == 0 {
+		return nil
+	}
+
 	f, err := os.Open(tcpPath)
 	if err != nil {
 		return nil
@@ -136,8 +198,8 @@ func findListeningPorts(tcpPath string, socketInodes map[string]bool) []int {
 			continue
 		}
 
-		// If socketInodes is non-empty, only accept sockets owned by the target PID
-		if len(socketInodes) > 0 && !socketInodes[inode] {
+		// Strictly accept only sockets verified to belong to the target PID
+		if !socketInodes[inode] {
 			continue
 		}
 

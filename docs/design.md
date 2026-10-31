@@ -131,11 +131,12 @@ import (
 	"errors"
 )
 
-// Sentinel errors for adapter operations.
+// Sentinel errors for adapter operations (pkg/adapter/errors.go).
 var (
 	ErrSessionNotFound = errors.New("session not found")
 	ErrTurnInProgress  = errors.New("agent is currently generating response")
 	ErrNoOutputFound   = errors.New("no assistant output available to relay")
+	ErrAmbiguousSession = errors.New("ambiguous session ID matches multiple sessions")
 )
 
 type AgentType string
@@ -166,18 +167,34 @@ type Link struct {
 	UpdatedAt int64   `json:"updated_at"`
 }
 
+// TransmissionStatus represents the delivery outcome of a transmission.
+type TransmissionStatus string
+
+const (
+	TransmissionDelivered TransmissionStatus = "delivered"
+	TransmissionFailed    TransmissionStatus = "failed"
+)
+
 // Transmission represents an audited historical record of a cross-agent relay.
 type Transmission struct {
-	ID          string    `json:"id"`                    // Unique transmission event UUID
-	LinkName    string    `json:"link_name"`             // Link channel name (e.g. "moc-qoder")
-	FromAgent   AgentType `json:"from_agent"`            // Sender agent (e.g. "qoder")
-	FromSession string    `json:"from_session"`          // Sender session ID
-	ToAgent     AgentType `json:"to_agent"`              // Recipient agent (e.g. "antigravity")
-	ToSession   string    `json:"to_session"`            // Recipient session ID
-	UserPrompt  string    `json:"user_prompt,omitempty"` // User-supplied directive (e.g. "按方案 a 修复")
-	Body        string    `json:"body"`                  // Extracted markdown output from source agent
-	Timestamp   int64     `json:"timestamp"`             // Event Unix timestamp
+	ID          string             `json:"id"`                    // Unique transmission event UUID
+	LinkName    string             `json:"link_name"`             // Link channel name (e.g. "moc-qoder")
+	FromAgent   AgentType          `json:"from_agent"`            // Sender agent (e.g. "qoder")
+	FromSession string             `json:"from_session"`          // Sender session ID
+	ToAgent     AgentType          `json:"to_agent"`              // Recipient agent (e.g. "antigravity")
+	ToSession   string             `json:"to_session"`            // Recipient session ID
+	UserPrompt  string             `json:"user_prompt,omitempty"` // User-supplied directive (e.g. "按方案 a 修复")
+	Body        string             `json:"body"`                  // Extracted markdown output from source agent
+	Timestamp   int64              `json:"timestamp"`             // Event Unix timestamp
+	Status      TransmissionStatus `json:"status,omitempty"`      // Delivery outcome: "delivered" or "failed"
+	Error       string             `json:"error,omitempty"`       // Delivery error description if failed
 }
+
+// Sentinel errors in pkg/adapter/errors.go:
+// - ErrSessionNotFound: session does not exist on disk or in database
+// - ErrTurnInProgress: agent is currently generating response or holding lease
+// - ErrNoOutputFound: session has no assistant response available
+// - ErrAmbiguousSession: short session ID or exact UUID matches multiple conflicting sessions
 
 // Adapter defines the contract every AI agent driver must implement.
 type Adapter interface {
@@ -214,14 +231,22 @@ type Adapter interface {
     - `workspace_uris TEXT` (JSON array string, e.g. `["file:///home/kamus/CascadeProjects/relay"]`)
     - `last_modified_time DATETIME`
     - `not_fully_idle NUMERIC` (1 = busy generating, 0 = idle)
+    - `killed NUMERIC` (1 = terminated, filtered out)
+- **Short ID Resolution**:
+  - Exact match priority.
+  - Multi-match prefix returns explicit `ErrAmbiguousSession` with conflicting short IDs.
 - **Turn Extraction**:
   - Scans `~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl` backwards.
   - Matches records where `source == "MODEL" && type == "PLANNER_RESPONSE"`.
   - Reads `content` field. If `truncated_fields` contains `"content"`, streams the corresponding line from `transcript_full.jsonl`.
 - **In-Progress Guard**:
   - Checks if `not_fully_idle == 1` in `conversation_summaries.db`.
+- **Language Server & CSRF Discovery**:
+  - Paired environment variables: `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN`.
+  - Dynamic discovery via Linux `/proc`: matches `language_server` process with `--app_data_dir antigravity`, inspects `/proc/<pid>/fd` for owned socket inodes, probes `/healthz`, and caches credentials with TTL.
+  - Strictly **fail-closed**: never probes unfiltered system listening ports if socket inodes cannot be read.
 - **Message Injection (Reactive Wakeup)**:
-  - Invokes native CLI binary without focus stealing:
+  - Dispatches to Antigravity Language Server JSON-RPC or native CLI binary:
     ```bash
     ~/.gemini/antigravity/bin/agentapi send-message <conversation_id> <formatted_content>
     ```
@@ -229,14 +254,17 @@ type Adapter interface {
 ### 3.2 Qoder Adapter (`pkg/adapter/qoder`)
 - **Runtime Environment**:
   - Qoder Remote Host runs natively in the local POSIX environment (Linux WSL/SSH/macOS).
-  - Sessions are stored under `~/.qoder/projects/<workspace-slug>/` where `<workspace-slug>` replaces `/` with `-` (e.g. `-home-kamus-CascadeProjects-mopheus`).
+  - Sessions are stored under `~/.qoder/projects/<workspace-slug>/` where `<workspace-slug>` replaces `/` with `-` (e.g. `-home-kamus-CascadeProjects-relay`).
 - **Discovery**:
-  - **CLI-based**: Executes `qoder-worker-runtime -w <workspace> --list-sessions` which returns formatted session index, title, relative time, and UUID.
-  - **File-based**: Reads `state.json` inside `~/.qoder/projects/<workspace-slug>/<session-id>/` for creation and update timestamps.
+  - **Desktop Database**: Automatically loads authoritative titles and workspace CWD from Qoder's `main.sqlite` database across Linux, macOS, and Windows/WSL AppData paths.
+  - **File-based**: Reads metadata from `.jsonl` files in project directories.
+- **Short & Exact ID Resolution**:
+  - Multi-match prefix returns `ErrAmbiguousSession`.
+  - Exact session UUID existing in multiple distinct project directories returns `ErrAmbiguousSession`.
 - **Turn Extraction**:
   - Reads `~/.qoder/projects/<workspace-slug>/<session-id>.jsonl`.
   - Locates the active leaf uuid via `{"type":"active-leaf","sessionId":"...","leafUuid":"..."}`.
-  - Extracts the assistant turn `{"type":"assistant","uuid":"<leafUuid>","message":{"role":"assistant","content":[{"type":"text","text":"..."}]}}`.
+  - Extracts the assistant turn `{"type":"assistant","uuid":"<leafUuid>","message":{"role":"assistant","content":[{"type":"text","text":"..."}]}}`, safely ignoring `<thinking>` tokens.
 - **In-Progress Guard**:
   - Checks for active lease files in `~/.qoder/tasks/<session-id>/.task-locks/*.lease`.
   - Verifies `stop_reason == "end_turn"` in the active assistant turn.
@@ -245,12 +273,11 @@ type Adapter interface {
     ```bash
     qoder-worker-runtime -w <workspace> -r <session-id> -p "<formatted_content>"
     ```
-    *(Note: `-p` / `--print` instructs `qodercli` to run non-interactively without spawning a TTY session, and `<formatted_content>` is passed as the positional query argument).*
+    *(Note: `-p` / `--print` instructs `qoder-worker-runtime` to run non-interactively without spawning a TTY session, and `<formatted_content>` is passed as the positional query argument).*
   - Binary discovery precedence:
-    1. PATH (`qodercli`, `qoder`)
-    2. `~/.local/bin/qodercli`
-    3. `~/.qoder/remote/protocol-v1/installs/*/bin/qoder-worker-runtime`
-    4. `~/.qoder/entry/qoder`
+    1. `~/.qoder/remote/protocol-v1/installs/*/bin/qoder-worker-runtime`
+    2. PATH (`qodercli`)
+    3. PATH (`qoder`, excluding GUI launcher `~/.qoder/entry/qoder`)
 
 ### 3.3 Relayed Message Injection Format
 To give the recipient agent clear provenance and actionable instructions, `Adapter.Deliver` formats the payload into a standard envelope before passing it to the target agent's CLI:
@@ -281,8 +308,14 @@ Antigravity, Qoder, and other future targets are closed-source proprietary appli
 #### 1. Discover Sessions (`relay session list`)
 Queries local adapters to list available sessions, providing IDs for link creation:
 ```bash
-# List sessions for current workspace (or pass -w <dir>, or --all):
+# List sessions for current workspace (or pass -w <dir>):
 relay session list
+
+# List across all workspaces globally:
+relay session list --all
+
+# List only global / scratch sessions with no workspace:
+relay session list --no-workspace # or -g
 
 # Filter by specific agent:
 relay session list --agent agy
@@ -366,12 +399,13 @@ Hint: Please wait for the turn to complete before relaying.
 Inspects historical cross-agent relay events:
 ```bash
 relay log [link_name]
+relay log --show <transmission_uuid>
 ```
 *Example Output:*
 ```
-TIME                 LINK       DIR           PROMPT                 BODY SNIPPET
-2026-10-31 22:15:02  moc-qoder  qoder -> agy  按方案 (a) 修复        Summary: 0 blocking, 2 pre-existing...
-2026-10-31 21:30:10  moc-qoder  agy -> qoder  已完成修复，请复核     Fix concurrent map read/write in...
+TIME                 LINK       DIR           STATUS     PROMPT                 BODY SNIPPET
+2026-10-31 22:15:02  moc-qoder  qoder -> agy  delivered  按方案 (a) 修复        Summary: 0 blocking, 2 pre-existing...
+2026-10-31 21:30:10  moc-qoder  agy -> qoder  delivered  已完成修复，请复核     Fix concurrent map read/write in...
 ```
 
 ---

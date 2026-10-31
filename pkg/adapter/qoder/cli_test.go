@@ -10,7 +10,7 @@ func TestFindCLI(t *testing.T) {
 	ad := New()
 	cliPath, err := ad.FindCLI()
 	if err != nil {
-		t.Fatalf("FindCLI failed: %v", err)
+		t.Skipf("skipping TestFindCLI: Qoder CLI runtime not available on host: %v", err)
 	}
 	t.Logf("Discovered Qoder CLI path: %s", cliPath)
 

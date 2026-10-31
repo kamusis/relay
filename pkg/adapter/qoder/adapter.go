@@ -169,9 +169,41 @@ func (a *Adapter) locateSessionFile(sessionID string) (filePath string, slug str
 		}
 	}
 
-	// 1. Exact match takes precedence
-	if len(exactMatches) > 0 {
+	// 1. Exact matches
+	if len(exactMatches) == 1 {
 		return exactMatches[0].filePath, exactMatches[0].slug, nil
+	}
+	if len(exactMatches) > 1 {
+		// Check if they point to different workspaces
+		wsMap := make(map[string]match)
+		for _, em := range exactMatches {
+			meta, err := readSessionMetadata(em.filePath)
+			ws := em.slug
+			if err == nil && len(meta.Workspaces) > 0 {
+				ws = meta.Workspaces[0]
+			}
+			wsMap[ws] = em
+		}
+		if len(wsMap) > 1 {
+			var slugs []string
+			for _, em := range exactMatches {
+				slugs = append(slugs, em.slug)
+			}
+			return "", "", fmt.Errorf("%w: exact session ID '%s' exists across multiple distinct workspaces: %s",
+				adapter.ErrAmbiguousSession, sessionIDClean, strings.Join(slugs, ", "))
+		}
+		// Same workspace across different slugs, pick most recent
+		bestMatch := exactMatches[0]
+		var bestMtime int64
+		for _, em := range exactMatches {
+			if fi, err := os.Stat(em.filePath); err == nil {
+				if fi.ModTime().Unix() > bestMtime {
+					bestMtime = fi.ModTime().Unix()
+					bestMatch = em
+				}
+			}
+		}
+		return bestMatch.filePath, bestMatch.slug, nil
 	}
 
 	// 2. Prefix match

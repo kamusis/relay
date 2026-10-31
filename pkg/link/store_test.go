@@ -1,7 +1,9 @@
 package link
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/kamusis/relay/pkg/adapter"
@@ -78,5 +80,61 @@ func TestStore_CRUD(t *testing.T) {
 	// 7. Get after delete fails
 	if _, err := store.Get("moc-qoder"); err == nil {
 		t.Fatal("expected get after delete to fail, got nil")
+	}
+}
+
+func TestStore_Concurrent(t *testing.T) {
+	tempDir := t.TempDir()
+	storePath := filepath.Join(tempDir, "links.json")
+
+	const workers = 10
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			// Simulate separate CLI process with own Store instance
+			s := NewStore(storePath)
+			link := adapter.Link{
+				Name: fmt.Sprintf("link-%d", workerID),
+				SessionA: adapter.Session{
+					ID:    fmt.Sprintf("sess-a-%d", workerID),
+					Agent: adapter.AgentAntigravity,
+				},
+				SessionB: adapter.Session{
+					ID:    fmt.Sprintf("sess-b-%d", workerID),
+					Agent: adapter.AgentQoder,
+				},
+			}
+			if err := s.Create(link); err != nil {
+				errCh <- fmt.Errorf("worker %d create failed: %w", workerID, err)
+				return
+			}
+			// Update it
+			link.SessionA.Title = "Updated"
+			if err := s.Update(link); err != nil {
+				errCh <- fmt.Errorf("worker %d update failed: %w", workerID, err)
+				return
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	// Verify all links exist and intact
+	finalStore := NewStore(storePath)
+	list, err := finalStore.List()
+	if err != nil {
+		t.Fatalf("failed to list links after concurrent writes: %v", err)
+	}
+	if len(list) != workers {
+		t.Fatalf("expected %d links, got %d", workers, len(list))
 	}
 }
