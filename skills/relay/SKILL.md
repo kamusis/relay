@@ -88,23 +88,33 @@ When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"
    - Inform the user that the communication link has been created.
 
 ### Step 4: Execute the Relay to Qoder
-1. Send the latest output from Antigravity to Qoder:
+1. Send the review request from Antigravity to Qoder using **Direct Message mode (`-m`)**:
    ```bash
-   relay send <link-name> --to qoder "<prompt>"
+   relay send <link-name> --to qoder -m "<structured_review_request>"
    ```
-   - *Default prompt if user didn't specify*:
-     `"请针对上一轮完成的修改或最新提交进行代码与架构复审，重点关注正确性、边界处理、安全性与回归风险。"`
+   - **CRITICAL**: Always use `-m` to supply a clean, self-contained, structured review prompt (specifying target branch, commit hash, and verification checklist).
+   - Using `-m` delivers the message directly:
+     - It **bypasses source transcript extraction** (completely avoiding transcript contamination from intermediate peripheral chat like "已停止重定向").
+     - It **bypasses busy state checks** (allowing the active agent to call `relay send` without self-deadlock).
+   - *Example*:
+     ```bash
+     relay send <link-name> --to qoder -m "请对最新提交 commit 28ef9212 进行代码与架构深入复审，重点关注：1. 正确性与边界处理；2. 架构规范对齐；3. 并发安全与回归风险。"
+     ```
 2. **Execution Characteristics**:
    - Qoder will run headlessly via `qodercli` without needing the desktop GUI app.
    - For multi-tool reasoning tasks, Qoder may run `git log`, inspect files, or run tests. It typically completes in 30–60 seconds.
-   - `relay send` will wait for Qoder to complete and print delivery details (Transmission ID, From, To, Directive, Relayed Body bytes).
+   - `relay send` will wait for Qoder to complete and print delivery details (Transmission ID, From, To, Relayed Body bytes).
    - If delivery succeeds, the audit log status updates to `delivered`.
 
 ### Step 5: Relay the Verdict back to Antigravity
 Once Qoder finishes generating its review:
-1. Run:
+1. Relay Qoder's completed output back into Antigravity (using pure forwarding or forward+append):
    ```bash
-   relay send <link-name> --to agy "查收 Qoder 评审结论与修改建议"
+   # Pure forwarding of Qoder's latest review:
+   relay send <link-name> --to agy
+
+   # Or forwarding annotated with directive:
+   relay send <link-name> --to agy -m "查收 Qoder 评审结论与整改意见" --append
    ```
 2. The latest assistant turn from Qoder is immediately delivered into the source Antigravity session.
 3. Check status:

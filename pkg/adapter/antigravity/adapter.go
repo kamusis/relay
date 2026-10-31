@@ -215,14 +215,19 @@ func (a *Adapter) GetLatestAssistantOutput(sessionID string) (string, error) {
 		return "", err
 	}
 
-	// Verify idle status in DB
-	db, err := a.openDB()
-	if err == nil {
-		var notFullyIdle int
-		_ = db.QueryRow("SELECT not_fully_idle FROM conversation_summaries WHERE conversation_id = ?", sess.ID).Scan(&notFullyIdle)
-		db.Close()
-		if notFullyIdle == 1 {
-			return "", adapter.ErrTurnInProgress
+	// Verify idle status in DB, unless this is a self-invocation from within the active session.
+	currentConvID := os.Getenv("ANTIGRAVITY_CONVERSATION_ID")
+	isSelfInvocation := currentConvID != "" && (currentConvID == sess.ID || strings.HasPrefix(sess.ID, currentConvID) || strings.HasPrefix(currentConvID, sess.ID))
+
+	if !isSelfInvocation {
+		db, err := a.openDB()
+		if err == nil {
+			var notFullyIdle int
+			_ = db.QueryRow("SELECT not_fully_idle FROM conversation_summaries WHERE conversation_id = ?", sess.ID).Scan(&notFullyIdle)
+			db.Close()
+			if notFullyIdle == 1 {
+				return "", adapter.ErrTurnInProgress
+			}
 		}
 	}
 

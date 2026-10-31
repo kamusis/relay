@@ -419,14 +419,24 @@ func parseAndResolveEndpoint(ep string) (*adapter.Session, error) {
 // ============================================================================
 
 func newSendCmd() *cobra.Command {
-	var toTarget string
+	var (
+		toTarget   string
+		msgFlag    string
+		appendFlag bool
+		forceFlag  bool
+	)
 
 	sendCmd := &cobra.Command{
-		Use:   "send <link_name> --to <target_agent_or_id> [prompt...]",
-		Short: "Relay the latest turn from counterpart agent to target agent",
-		Example: `  relay send moc-qoder --to agy "按方案 (a) 修复，重点检查内存泄露"
-  relay send moc-qoder --to qoder "已完成修复，请复核并发安全性"
-  relay send moc-qoder --to agy`,
+		Use:   "send <link_name> --to <target_agent_or_id> [-m message] [--append] [--force]",
+		Short: "Relay output or messages between linked agents",
+		Example: `  # 1. Direct message mode: sends only the specified message (bypasses transcript & idle checks)
+  relay send moc-qoder --to qoder -m "请对 commit 28ef9212 进行代码复审"
+
+  # 2. Pure automatic forwarding: extracts latest output from counterpart
+  relay send moc-qoder --to agy
+
+  # 3. Forward and append: extracts latest output and annotates with directive
+  relay send moc-qoder --to agy -m "重点检查内存泄露" --append`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			linkName := args[0]
@@ -434,9 +444,10 @@ func newSendCmd() *cobra.Command {
 				return fmt.Errorf("flag --to is required for link '%s'", linkName)
 			}
 
-			var userPrompt string
-			if len(args) > 1 {
-				userPrompt = strings.Join(args[1:], " ")
+			// Determine message: flag -m takes precedence, fallback to positional args
+			message := strings.TrimSpace(msgFlag)
+			if message == "" && len(args) > 1 {
+				message = strings.TrimSpace(strings.Join(args[1:], " "))
 			}
 
 			// 1. Load Link
@@ -494,14 +505,32 @@ func newSendCmd() *cobra.Command {
 				_ = store.Update(*l)
 			}
 
-			// 4. Extract latest assistant output from source
-			output, err := srcAdapter.GetLatestAssistantOutput(freshSrc.ID)
-			if err != nil {
-				if errors.Is(err, adapter.ErrTurnInProgress) {
-					return fmt.Errorf("source agent '%s' (session %s) is currently busy generating output\nHint: please wait for the turn to complete before relaying",
-						srcSess.Agent, adapter.ShortID(freshSrc.ID))
+			// 4. Determine transmission payload based on mode
+			var body string
+			var directive string
+
+			if message != "" && !appendFlag {
+				// Mode 1: Direct Message (-m "...", without --append)
+				// Sends the message directly as the transmission body.
+				// Does NOT touch source transcript or idle status.
+				body = message
+				fmt.Printf("Relaying direct message to %s (%s)...\n",
+					tgtSess.Agent, adapter.ShortID(freshTgt.ID))
+			} else {
+				// Mode 2: Pure Forwarding (no message) OR Mode 3: Forward + Append (-m "..." --append)
+				output, err := srcAdapter.GetLatestAssistantOutput(freshSrc.ID)
+				if err != nil {
+					if errors.Is(err, adapter.ErrTurnInProgress) && !forceFlag {
+						return fmt.Errorf("source agent '%s' (session %s) is currently busy generating output\nHint: please wait for the turn to complete, or use -m \"<message>\" to send a direct message without extracting transcript",
+							srcSess.Agent, adapter.ShortID(freshSrc.ID))
+					} else if !errors.Is(err, adapter.ErrTurnInProgress) {
+						return fmt.Errorf("failed to extract output from source session: %w", err)
+					}
 				}
-				return fmt.Errorf("failed to extract output from source session: %w", err)
+				body = output
+				directive = message
+				fmt.Printf("Relaying latest output from %s (%s) -> %s (%s)...\n",
+					srcSess.Agent, adapter.ShortID(freshSrc.ID), tgtSess.Agent, adapter.ShortID(freshTgt.ID))
 			}
 
 			// 5. Construct Transmission
@@ -512,8 +541,8 @@ func newSendCmd() *cobra.Command {
 				FromSession: freshSrc.ID,
 				ToAgent:     tgtSess.Agent,
 				ToSession:   freshTgt.ID,
-				UserPrompt:  userPrompt,
-				Body:        output,
+				UserPrompt:  directive,
+				Body:        body,
 				Timestamp:   time.Now().Unix(),
 			}
 
@@ -527,8 +556,6 @@ func newSendCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
-			fmt.Printf("Relaying latest output from %s (%s) -> %s (%s)...\n",
-				srcSess.Agent, adapter.ShortID(freshSrc.ID), tgtSess.Agent, adapter.ShortID(freshTgt.ID))
 			fmt.Printf("Waiting for %s to execute turn (this may take up to a minute for multi-tool tasks)...\n", tgtSess.Agent)
 
 			deliverErr := tgtAdapter.Deliver(ctx, tx)
@@ -555,22 +582,25 @@ func newSendCmd() *cobra.Command {
 			}
 
 			// Print snippet preview
-			snippet := strings.ReplaceAll(output, "\n", " ")
+			snippet := strings.ReplaceAll(body, "\n", " ")
 			snippet = runewidth.Truncate(snippet, 80, "...")
 
 			fmt.Println("Relay delivered successfully.")
 			fmt.Printf("  Transmission ID: %s\n", tx.ID)
 			fmt.Printf("  From:            %s (session %s)\n", srcSess.Agent, adapter.ShortID(freshSrc.ID))
 			fmt.Printf("  To:              %s (session %s)\n", tgtSess.Agent, adapter.ShortID(freshTgt.ID))
-			if userPrompt != "" {
-				fmt.Printf("  Directive:       %s\n", userPrompt)
+			if directive != "" {
+				fmt.Printf("  Directive:       %s\n", directive)
 			}
-			fmt.Printf("  Relayed Body:    %s (%d bytes)\n", snippet, len(output))
+			fmt.Printf("  Relayed Body:    %s (%d bytes)\n", snippet, len(body))
 			return nil
 		},
 	}
 
 	sendCmd.Flags().StringVar(&toTarget, "to", "", "Target agent (agy, qoder) or session ID in the link")
+	sendCmd.Flags().StringVarP(&msgFlag, "message", "m", "", "Explicit message content to deliver directly")
+	sendCmd.Flags().BoolVar(&appendFlag, "append", false, "Append message to the latest output extracted from source session")
+	sendCmd.Flags().BoolVar(&forceFlag, "force", false, "Bypass busy state checks on source session when extracting output")
 	_ = sendCmd.MarkFlagRequired("to")
 	return sendCmd
 }

@@ -173,14 +173,16 @@ relay link rm <link-name>
 ```
 
 ### `relay send`
-Transmit latest output between linked agents.
+Transmit outputs or explicit messages between linked agents.
 ```bash
-# Relay latest output of counterpart to target agent
-relay send <link-name> --to <target-agent-or-id> [prompt...]
+# 1. Direct Message Mode (sends only -m, bypasses source transcript & busy checks)
+relay send <link-name> --to <target-agent> -m "Review commit 28ef9212 focusing on security"
 
-# Examples:
-relay send dev-review --to qoder "Fixes applied, please re-verify"
-relay send dev-review --to agy "Address review comments"
+# 2. Pure Forwarding Mode (automatically extracts counterpart's latest assistant output)
+relay send <link-name> --to <target-agent>
+
+# 3. Forward + Append Mode (extracts counterpart's latest output and annotates with directive)
+relay send <link-name> --to <target-agent> -m "Please address priority items" --append
 ```
 
 ### `relay log`
