@@ -114,17 +114,21 @@ LINK        ENDPOINT A                                   ENDPOINT B             
 dev-review  antigravity:3dfb0b87 (Feature Implementation) qoder:e959378f (Architecture Review)         -
 ```
 
-### 3. Relay Latest Output to Reviewer
-Forward the implementation results from Antigravity to Qoder for review:
+### 3. Relay Review Request to Reviewer
+Send a review request from Antigravity to Qoder in direct message mode (`-m`):
 ```bash
-relay send dev-review --to qoder "Please review the latest commit and tests on main"
+relay send dev-review --to qoder -m "Please review the latest commit 28ef9212 on main, focusing on security and error handling"
 ```
 Qoder runs headlessly in the background, executing verification tools (`git log`, `go test`, file inspections) and producing an authoritative review report.
 
 ### 4. Relay Review Verdict Back to Coder
-Once Qoder finishes, relay its review findings back to Antigravity:
+Once Qoder finishes, relay its review findings back to Antigravity (using pure forwarding or with an appended directive):
 ```bash
-relay send dev-review --to agy "Here is Qoder's review feedback. Please address priority items."
+# Pure forwarding mode: injects Qoder's complete review verdict into Antigravity
+relay send dev-review --to agy
+
+# Or forward and annotate with a directive:
+relay send dev-review --to agy -m "Please address priority items from Qoder's review" --append
 ```
 Antigravity receives the complete Markdown review directly in its conversation context and begins applying fixes.
 
