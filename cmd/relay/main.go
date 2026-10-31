@@ -518,11 +518,12 @@ func newSendCmd() *cobra.Command {
 			}
 
 			// 6. Inject payload into target session
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 			defer cancel()
 
 			fmt.Printf("Relaying latest output from %s (%s) -> %s (%s)...\n",
 				srcSess.Agent, adapter.ShortID(freshSrc.ID), tgtSess.Agent, adapter.ShortID(freshTgt.ID))
+			fmt.Printf("Waiting for %s to execute turn (this may take up to a minute for multi-tool tasks)...\n", tgtSess.Agent)
 
 			deliverErr := tgtAdapter.Deliver(ctx, tx)
 			if deliverErr != nil {

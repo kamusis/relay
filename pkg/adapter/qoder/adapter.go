@@ -68,39 +68,58 @@ func PathToSlug(p string) string {
 	return strings.ReplaceAll(clean, string(os.PathSeparator), "-")
 }
 
-// FindCLI locates the qodercli / qoder-worker-runtime binary on the system.
+// FindCLI locates the qoder-worker-runtime or qodercli binary on the system.
 func (a *Adapter) FindCLI() (string, error) {
-	// 1. Check PATH
+	// 0. Explicit env override
+	if custom := os.Getenv("QODER_CLI_PATH"); custom != "" {
+		if _, err := os.Stat(custom); err == nil {
+			return custom, nil
+		}
+	}
+
+	// 1. Built-in worker runtime in ~/.qoder/remote/protocol-v1/installs/*/*/bin/qoder-worker-runtime
+	patterns := []string{
+		filepath.Join(a.baseDir, "remote", "protocol-v1", "installs", "*", "*", "bin", "qoder-worker-runtime"),
+		filepath.Join(a.baseDir, "remote", "protocol-v1", "installs", "*", "bin", "qoder-worker-runtime"),
+	}
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(pattern)
+		if len(matches) > 0 {
+			sort.Strings(matches)
+			for i := len(matches) - 1; i >= 0; i-- {
+				candidate := matches[i]
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate, nil
+				}
+			}
+		}
+	}
+
+	// 2. Check ~/.local/bin/qoder-worker-runtime or ~/.local/bin/qodercli
+	home, _ := os.UserHomeDir()
+	localCandidates := []string{
+		filepath.Join(home, ".local", "bin", "qoder-worker-runtime"),
+		filepath.Join(home, ".local", "bin", "qodercli"),
+	}
+	for _, lc := range localCandidates {
+		if _, err := os.Stat(lc); err == nil {
+			return lc, nil
+		}
+	}
+
+	// 3. Look in PATH for qodercli
 	if p, err := exec.LookPath("qodercli"); err == nil {
 		return p, nil
 	}
+
+	// 4. Look in PATH for qoder, but ignore ~/.qoder/entry/qoder which only launches IDE
 	if p, err := exec.LookPath("qoder"); err == nil {
-		return p, nil
+		if !strings.Contains(p, filepath.Join(".qoder", "entry", "qoder")) {
+			return p, nil
+		}
 	}
 
-	// 2. Check ~/.local/bin/qodercli
-	home, _ := os.UserHomeDir()
-	localBin := filepath.Join(home, ".local", "bin", "qodercli")
-	if _, err := os.Stat(localBin); err == nil {
-		return localBin, nil
-	}
-
-	// 3. Glob ~/.qoder/remote/protocol-v1/installs/*/bin/qoder-worker-runtime
-	pattern := filepath.Join(a.baseDir, "remote", "protocol-v1", "installs", "*", "bin", "qoder-worker-runtime")
-	matches, _ := filepath.Glob(pattern)
-	if len(matches) > 0 {
-		// Sort to pick latest version if multiple
-		sort.Strings(matches)
-		return matches[len(matches)-1], nil
-	}
-
-	// 4. Fallback ~/.qoder/entry/qoder
-	entry := filepath.Join(a.baseDir, "entry", "qoder")
-	if _, err := os.Stat(entry); err == nil {
-		return entry, nil
-	}
-
-	return "", fmt.Errorf("qoder CLI binary not found in PATH or ~/.qoder/remote/...")
+	return "", fmt.Errorf("qoder worker runtime binary not found in ~/.qoder/remote/protocol-v1/installs/...")
 }
 
 // locateSessionFile finds the .jsonl file for a session ID across all projects or inside a specific workspace.
