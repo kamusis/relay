@@ -294,13 +294,25 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		limit = 30
 	}
 
-	query := `
-		SELECT conversation_id, title, workspace_uris, last_modified_time
-		FROM conversation_summaries
-		WHERE killed = 0
-		ORDER BY last_modified_time DESC
-		LIMIT ?;
-	`
+	var query string
+	if workspace == adapter.WorkspaceNone {
+		query = `
+			SELECT conversation_id, title, workspace_uris, last_modified_time
+			FROM conversation_summaries
+			WHERE killed = 0 AND (workspace_uris = '' OR workspace_uris = '[]')
+			ORDER BY last_modified_time DESC
+			LIMIT ?;
+		`
+	} else {
+		query = `
+			SELECT conversation_id, title, workspace_uris, last_modified_time
+			FROM conversation_summaries
+			WHERE killed = 0
+			ORDER BY last_modified_time DESC
+			LIMIT ?;
+		`
+	}
+
 	rows, err := db.Query(query, limit*2) // fetch a bit more for workspace filtering
 	if err != nil {
 		return nil, fmt.Errorf("failed to query sessions: %w", err)
@@ -322,7 +334,11 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		}
 
 		ws := parseWorkspaceURI(wsRaw)
-		if workspace != "" {
+		if workspace == adapter.WorkspaceNone {
+			if ws != "" {
+				continue
+			}
+		} else if workspace != "" {
 			if ws == "" {
 				continue
 			}

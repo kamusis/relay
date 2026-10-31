@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
 	"github.com/kamusis/relay/pkg/adapter"
@@ -82,6 +83,7 @@ func newSessionCmd() *cobra.Command {
 		agentFilter string
 		workspace   string
 		allWS       bool
+		noWS        bool
 		limit       int
 	)
 
@@ -89,14 +91,15 @@ func newSessionCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List recent conversation sessions from local agent adapters",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !allWS && workspace == "" {
+			if noWS {
+				workspace = adapter.WorkspaceNone
+			} else if allWS {
+				workspace = adapter.WorkspaceAll
+			} else if workspace == "" {
 				// Default to current working directory
 				if cwd, err := os.Getwd(); err == nil {
 					workspace = cwd
 				}
-			}
-			if allWS {
-				workspace = ""
 			}
 
 			var targetAgents []adapter.Adapter
@@ -114,8 +117,14 @@ func newSessionCmd() *cobra.Command {
 				targetAgents = registry.List()
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "AGENT\tSESSION ID\tUPDATED\tTITLE\tWORKSPACE")
+			// Aligned header with explicit visual terminal column widths
+			fmt.Printf("%s  %s  %s  %s  %s\n",
+				runewidth.FillRight("AGENT", 12),
+				runewidth.FillRight("SESSION ID", 36),
+				runewidth.FillRight("UPDATED", 9),
+				runewidth.FillRight("TITLE", 45),
+				"WORKSPACE",
+			)
 
 			count := 0
 			for _, ad := range targetAgents {
@@ -125,22 +134,27 @@ func newSessionCmd() *cobra.Command {
 				}
 				for _, s := range sessions {
 					count++
-					title := s.Title
-					if len(title) > 45 {
-						title = title[:42] + "..."
-					}
+					agentStr := runewidth.FillRight(string(s.Agent), 12)
+					idStr := runewidth.FillRight(s.ID, 36)
+					updStr := runewidth.FillRight(formatRelativeTime(s.UpdatedAt), 9)
+
+					// Safely truncate by visual width, preventing multi-byte Chinese corruption
+					titleTrunc := runewidth.Truncate(s.Title, 43, "...")
+					titleStr := runewidth.FillRight(titleTrunc, 45)
+
 					ws := s.Workspace
-					if len(ws) > 35 {
-						ws = "..." + ws[len(ws)-32:]
+					if len(ws) > 42 {
+						ws = "..." + ws[len(ws)-39:]
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-						s.Agent, s.ID, formatRelativeTime(s.UpdatedAt), title, ws)
+
+					fmt.Printf("%s  %s  %s  %s  %s\n", agentStr, idStr, updStr, titleStr, ws)
 				}
 			}
-			w.Flush()
 
 			if count == 0 {
-				if workspace != "" {
+				if noWS {
+					fmt.Println("\nNo global / scratch sessions found (without workspace).")
+				} else if workspace != "" && workspace != adapter.WorkspaceNone {
 					fmt.Printf("\nNo active sessions found for workspace '%s'. Pass --all to list globally.\n", workspace)
 				} else {
 					fmt.Println("\nNo active sessions found.")
@@ -153,7 +167,9 @@ func newSessionCmd() *cobra.Command {
 	listCmd.Flags().StringVar(&agentFilter, "agent", "", "Filter by agent type (agy, qoder, etc.)")
 	listCmd.Flags().StringVarP(&workspace, "workspace", "w", "", "Filter sessions by workspace directory")
 	listCmd.Flags().BoolVar(&allWS, "all", false, "List sessions across all workspaces globally")
-	listCmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of sessions to return per agent")
+	listCmd.Flags().BoolVar(&noWS, "no-workspace", false, "List only sessions with no associated workspace (global/scratch)")
+	listCmd.Flags().BoolVarP(&noWS, "global", "g", false, "Alias for --no-workspace")
+	listCmd.Flags().IntVarP(&limit, "limit", "n", 20, "Maximum number of sessions to return per agent")
 
 	sessionCmd.AddCommand(listCmd)
 	return sessionCmd
@@ -476,9 +492,7 @@ func newSendCmd() *cobra.Command {
 
 			// Print snippet preview
 			snippet := strings.ReplaceAll(output, "\n", " ")
-			if len(snippet) > 80 {
-				snippet = snippet[:77] + "..."
-			}
+			snippet = runewidth.Truncate(snippet, 80, "...")
 
 			fmt.Println("Relay delivered successfully.")
 			if userPrompt != "" {
@@ -551,23 +565,29 @@ func newLogCmd() *cobra.Command {
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "TIME\tLINK\tDIRECTION\tPROMPT\tBODY SNIPPET")
+			fmt.Printf("%s  %s  %s  %s  %s\n",
+				runewidth.FillRight("TIME", 19),
+				runewidth.FillRight("LINK", 12),
+				runewidth.FillRight("DIRECTION", 15),
+				runewidth.FillRight("PROMPT", 22),
+				"BODY SNIPPET",
+			)
 
 			for _, tx := range records {
 				tStr := time.Unix(tx.Timestamp, 0).Format("2006-01-02 15:04:05")
 				dir := fmt.Sprintf("%s -> %s", tx.FromAgent, tx.ToAgent)
-				prompt := tx.UserPrompt
-				if len(prompt) > 20 {
-					prompt = prompt[:17] + "..."
-				}
+				prompt := runewidth.Truncate(tx.UserPrompt, 20, "...")
 				snippet := strings.ReplaceAll(tx.Body, "\n", " ")
-				if len(snippet) > 40 {
-					snippet = snippet[:37] + "..."
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", tStr, tx.LinkName, dir, prompt, snippet)
+				snippet = runewidth.Truncate(snippet, 40, "...")
+
+				fmt.Printf("%s  %s  %s  %s  %s\n",
+					runewidth.FillRight(tStr, 19),
+					runewidth.FillRight(tx.LinkName, 12),
+					runewidth.FillRight(dir, 15),
+					runewidth.FillRight(prompt, 22),
+					snippet,
+				)
 			}
-			w.Flush()
 			return nil
 		},
 	}

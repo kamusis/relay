@@ -125,4 +125,13 @@ func TestAntigravityAdapter(t *testing.T) {
 	if len(listFiltered) != 1 || listFiltered[0].Title != "Session Two" {
 		t.Errorf("expected 1 session 'Session Two', got %+v", listFiltered)
 	}
+
+	// 7. ListSessions with WorkspaceNone strictly returns scratch sessions
+	listNone, err := ad.ListSessions(adapter.WorkspaceNone, 10)
+	if err != nil {
+		t.Fatalf("failed to list WorkspaceNone sessions: %v", err)
+	}
+	if len(listNone) != 1 || listNone[0].Title != "Scratch Session" {
+		t.Errorf("expected 1 scratch session, got %+v", listNone)
+	}
 }

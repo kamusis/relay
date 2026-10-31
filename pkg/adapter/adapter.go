@@ -20,6 +20,13 @@ const (
 	AgentClaude AgentType = "claude"
 )
 
+const (
+	// WorkspaceAll represents listing sessions across all workspaces without filtering.
+	WorkspaceAll = ""
+	// WorkspaceNone represents listing strictly sessions with no associated workspace.
+	WorkspaceNone = ":none:"
+)
+
 // ParseAgentType normalizes user-provided agent strings (including shorthands) into canonical AgentType.
 func ParseAgentType(s string) (AgentType, error) {
 	norm := strings.ToLower(strings.TrimSpace(s))

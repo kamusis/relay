@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/kamusis/relay/pkg/adapter"
+	"github.com/mattn/go-runewidth"
 )
 
 // Config configures the Qoder adapter paths.
@@ -212,10 +213,7 @@ func readSessionMetadata(jsonlPath string) (*parsedSessionMeta, error) {
 	} else if firstUserPrompt != "" {
 		lines := strings.Split(firstUserPrompt, "\n")
 		title := strings.TrimSpace(lines[0])
-		if len(title) > 60 {
-			title = title[:60] + "..."
-		}
-		meta.Title = title
+		meta.Title = runewidth.Truncate(title, 60, "...")
 	} else {
 		meta.Title = "Untitled Session"
 	}
@@ -402,7 +400,7 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 	}
 
 	targetSlug := ""
-	if workspace != "" {
+	if workspace != "" && workspace != adapter.WorkspaceNone {
 		targetSlug = PathToSlug(workspace)
 	}
 
@@ -452,6 +450,9 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		primaryWS := ""
 		if len(meta.Workspaces) > 0 {
 			primaryWS = meta.Workspaces[0]
+		}
+		if workspace == adapter.WorkspaceNone && primaryWS != "" {
+			continue
 		}
 		sessions = append(sessions, adapter.Session{
 			ID:        meta.ID,
