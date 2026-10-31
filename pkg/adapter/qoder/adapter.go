@@ -1,0 +1,469 @@
+package qoder
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/kamusis/relay/pkg/adapter"
+)
+
+// Config configures the Qoder adapter paths.
+type Config struct {
+	BaseDir string // Defaults to ~/.qoder
+}
+
+// Adapter implements the adapter.Adapter interface for Qoder (QoderWork).
+type Adapter struct {
+	baseDir string
+}
+
+// New creates a new Qoder Adapter.
+func New(cfg ...Config) *Adapter {
+	base := ""
+	if len(cfg) > 0 && cfg[0].BaseDir != "" {
+		base = cfg[0].BaseDir
+	} else {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".qoder")
+	}
+	return &Adapter{baseDir: base}
+}
+
+// Type returns the unique identifier for Qoder.
+func (a *Adapter) Type() adapter.AgentType {
+	return adapter.AgentQoder
+}
+
+func (a *Adapter) projectsDir() string {
+	return filepath.Join(a.baseDir, "projects")
+}
+
+func (a *Adapter) tasksDir() string {
+	return filepath.Join(a.baseDir, "tasks")
+}
+
+// PathToSlug converts an absolute workspace path to Qoder's directory slug (e.g. /a/b -> -a-b).
+func PathToSlug(p string) string {
+	clean := filepath.Clean(p)
+	return strings.ReplaceAll(clean, string(os.PathSeparator), "-")
+}
+
+// FindCLI locates the qodercli / qoder-worker-runtime binary on the system.
+func (a *Adapter) FindCLI() (string, error) {
+	// 1. Check PATH
+	if p, err := exec.LookPath("qodercli"); err == nil {
+		return p, nil
+	}
+	if p, err := exec.LookPath("qoder"); err == nil {
+		return p, nil
+	}
+
+	// 2. Check ~/.local/bin/qodercli
+	home, _ := os.UserHomeDir()
+	localBin := filepath.Join(home, ".local", "bin", "qodercli")
+	if _, err := os.Stat(localBin); err == nil {
+		return localBin, nil
+	}
+
+	// 3. Glob ~/.qoder/remote/protocol-v1/installs/*/bin/qoder-worker-runtime
+	pattern := filepath.Join(a.baseDir, "remote", "protocol-v1", "installs", "*", "bin", "qoder-worker-runtime")
+	matches, _ := filepath.Glob(pattern)
+	if len(matches) > 0 {
+		// Sort to pick latest version if multiple
+		sort.Strings(matches)
+		return matches[len(matches)-1], nil
+	}
+
+	// 4. Fallback ~/.qoder/entry/qoder
+	entry := filepath.Join(a.baseDir, "entry", "qoder")
+	if _, err := os.Stat(entry); err == nil {
+		return entry, nil
+	}
+
+	return "", fmt.Errorf("qoder CLI binary not found in PATH or ~/.qoder/remote/...")
+}
+
+// locateSessionFile finds the .jsonl file for a session ID across all projects or inside a specific workspace.
+func (a *Adapter) locateSessionFile(sessionID string) (filePath string, slug string, err error) {
+	projDir := a.projectsDir()
+	entries, err := os.ReadDir(projDir)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: projects dir %s unreadable: %v", adapter.ErrSessionNotFound, projDir, err)
+	}
+
+	sessionIDClean := strings.TrimSpace(sessionID)
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		projPath := filepath.Join(projDir, entry.Name())
+		files, err := os.ReadDir(projPath)
+		if err != nil {
+			continue
+		}
+
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			baseName := strings.TrimSuffix(f.Name(), ".jsonl")
+			if baseName == sessionIDClean || strings.HasPrefix(baseName, sessionIDClean) {
+				return filepath.Join(projPath, f.Name()), entry.Name(), nil
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("%w: qoder session %s not found", adapter.ErrSessionNotFound, sessionID)
+}
+
+// parsedSessionMeta holds extracted metadata from reading a session's jsonl.
+type parsedSessionMeta struct {
+	ID         string
+	Title      string
+	Workspaces []string
+	ActiveLeaf string
+	UpdatedAt  int64
+}
+
+// readSessionMetadata reads a .jsonl file to extract session title, directories, and latest leaf UUID.
+func readSessionMetadata(jsonlPath string) (*parsedSessionMeta, error) {
+	f, err := os.Open(jsonlPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	stat, _ := f.Stat()
+	mtime := int64(0)
+	if stat != nil {
+		mtime = stat.ModTime().Unix()
+	}
+
+	meta := &parsedSessionMeta{
+		ID:        strings.TrimSuffix(filepath.Base(jsonlPath), ".jsonl"),
+		UpdatedAt: mtime,
+	}
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 16*1024*1024)
+
+	var firstUserPrompt string
+	var lastPrompt string
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var generic struct {
+			Type        string   `json:"type"`
+			LastPrompt  string   `json:"lastPrompt"`
+			LeafUUID    string   `json:"leafUuid"`
+			Directories []string `json:"directories"`
+			Message     *struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+
+		if err := json.Unmarshal(line, &generic); err != nil {
+			continue
+		}
+
+		switch generic.Type {
+		case "last-prompt":
+			if generic.LastPrompt != "" {
+				lastPrompt = generic.LastPrompt
+			}
+		case "active-leaf":
+			if generic.LeafUUID != "" {
+				meta.ActiveLeaf = generic.LeafUUID
+			}
+		case "workspace-directories":
+			if len(generic.Directories) > 0 {
+				meta.Workspaces = generic.Directories
+			}
+		case "user":
+			if firstUserPrompt == "" && generic.Message != nil {
+				for _, c := range generic.Message.Content {
+					if c.Text != "" {
+						firstUserPrompt = c.Text
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if lastPrompt != "" {
+		meta.Title = lastPrompt
+	} else if firstUserPrompt != "" {
+		lines := strings.Split(firstUserPrompt, "\n")
+		title := strings.TrimSpace(lines[0])
+		if len(title) > 60 {
+			title = title[:60] + "..."
+		}
+		meta.Title = title
+	} else {
+		meta.Title = "Untitled Session"
+	}
+
+	return meta, nil
+}
+
+// GetSession retrieves fresh metadata for a Qoder session.
+func (a *Adapter) GetSession(sessionID string) (*adapter.Session, error) {
+	jsonlPath, _, err := a.locateSessionFile(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	meta, err := readSessionMetadata(jsonlPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read qoder session metadata: %w", err)
+	}
+
+	primaryWS := ""
+	if len(meta.Workspaces) > 0 {
+		primaryWS = meta.Workspaces[0]
+	}
+
+	return &adapter.Session{
+		ID:        meta.ID,
+		Agent:     adapter.AgentQoder,
+		Title:     meta.Title,
+		Workspace: primaryWS,
+		UpdatedAt: meta.UpdatedAt,
+	}, nil
+}
+
+// checkLeaseLock checks if an active task lease lock exists for this session.
+func (a *Adapter) checkLeaseLock(sessionID string) bool {
+	lockDir := filepath.Join(a.tasksDir(), sessionID, ".task-locks")
+	matches, _ := filepath.Glob(filepath.Join(lockDir, "*.lease"))
+	return len(matches) > 0
+}
+
+// GetLatestAssistantOutput extracts the latest completed assistant turn for a session.
+func (a *Adapter) GetLatestAssistantOutput(sessionID string) (string, error) {
+	jsonlPath, _, err := a.locateSessionFile(sessionID)
+	if err != nil {
+		return "", err
+	}
+
+	cleanID := strings.TrimSuffix(filepath.Base(jsonlPath), ".jsonl")
+	if a.checkLeaseLock(cleanID) {
+		return "", adapter.ErrTurnInProgress
+	}
+
+	f, err := os.Open(jsonlPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open session jsonl: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 32*1024*1024)
+
+	var activeLeaf string
+	var lastAssistantWithText string
+	assistantTurns := make(map[string]struct {
+		Text       string
+		StopReason string
+	})
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var evt struct {
+			Type       string `json:"type"`
+			UUID       string `json:"uuid"`
+			LeafUUID   string `json:"leafUuid"`
+			StopReason string `json:"stop_reason"`
+			Message    *struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+
+		if err := json.Unmarshal(line, &evt); err != nil {
+			continue
+		}
+
+		if evt.Type == "active-leaf" && evt.LeafUUID != "" {
+			activeLeaf = evt.LeafUUID
+		} else if evt.Type == "assistant" && evt.UUID != "" && evt.Message != nil {
+			var sb strings.Builder
+			for _, c := range evt.Message.Content {
+				if c.Type == "text" && c.Text != "" {
+					sb.WriteString(c.Text)
+				}
+			}
+			txt := sb.String()
+			assistantTurns[evt.UUID] = struct {
+				Text       string
+				StopReason string
+			}{
+				Text:       txt,
+				StopReason: evt.StopReason,
+			}
+			if strings.TrimSpace(txt) != "" {
+				lastAssistantWithText = evt.UUID
+			}
+		}
+	}
+
+	// 1. Try active leaf first
+	if activeLeaf != "" {
+		if turn, ok := assistantTurns[activeLeaf]; ok {
+			if turn.StopReason != "" && turn.StopReason != "end_turn" {
+				return "", adapter.ErrTurnInProgress
+			}
+			if strings.TrimSpace(turn.Text) != "" {
+				return strings.TrimSpace(turn.Text), nil
+			}
+		}
+	}
+
+	// 2. Fallback to the latest assistant turn that produced text
+	if lastAssistantWithText != "" {
+		turn := assistantTurns[lastAssistantWithText]
+		if turn.StopReason != "" && turn.StopReason != "end_turn" {
+			return "", adapter.ErrTurnInProgress
+		}
+		if strings.TrimSpace(turn.Text) != "" {
+			return strings.TrimSpace(turn.Text), nil
+		}
+	}
+
+	return "", fmt.Errorf("%w for qoder session %s", adapter.ErrNoOutputFound, cleanID)
+}
+
+// Deliver injects the transmission into Qoder via qoder-worker-runtime.
+func (a *Adapter) Deliver(ctx context.Context, t adapter.Transmission) error {
+	cliPath, err := a.FindCLI()
+	if err != nil {
+		return err
+	}
+
+	// Determine workspace directory from session
+	sess, err := a.GetSession(t.ToSession)
+	if err != nil {
+		return err
+	}
+	ws := sess.Workspace
+	if ws == "" {
+		ws = "."
+	}
+
+	payload := t.FormatPayload()
+	// qodercli -w <workspace> -r <session-id> -p "<prompt>"
+	// -p stands for --print (non-interactive), prompt is passed as query positional argument.
+	cmd := exec.CommandContext(ctx, cliPath, "-w", ws, "-r", sess.ID, "-p", payload)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("qoder delivery failed: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// ListSessions discovers sessions from ~/.qoder/projects/.
+func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, error) {
+	projDir := a.projectsDir()
+	entries, err := os.ReadDir(projDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read qoder projects directory: %w", err)
+	}
+
+	if limit <= 0 {
+		limit = 30
+	}
+
+	targetSlug := ""
+	if workspace != "" {
+		targetSlug = PathToSlug(workspace)
+	}
+
+	var allFiles []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if targetSlug != "" && entry.Name() != targetSlug {
+			continue
+		}
+
+		pDir := filepath.Join(projDir, entry.Name())
+		files, err := os.ReadDir(pDir)
+		if err != nil {
+			continue
+		}
+
+		for _, f := range files {
+			if !f.IsDir() && strings.HasSuffix(f.Name(), ".jsonl") {
+				allFiles = append(allFiles, filepath.Join(pDir, f.Name()))
+			}
+		}
+	}
+
+	// Sort files by ModTime descending
+	type fileWithTime struct {
+		path  string
+		mtime int64
+	}
+	var fwt []fileWithTime
+	for _, fp := range allFiles {
+		if info, err := os.Stat(fp); err == nil {
+			fwt = append(fwt, fileWithTime{path: fp, mtime: info.ModTime().Unix()})
+		}
+	}
+	sort.Slice(fwt, func(i, j int) bool {
+		return fwt[i].mtime > fwt[j].mtime
+	})
+
+	var sessions []adapter.Session
+	for _, f := range fwt {
+		meta, err := readSessionMetadata(f.path)
+		if err != nil {
+			continue
+		}
+		primaryWS := ""
+		if len(meta.Workspaces) > 0 {
+			primaryWS = meta.Workspaces[0]
+		}
+		sessions = append(sessions, adapter.Session{
+			ID:        meta.ID,
+			Agent:     adapter.AgentQoder,
+			Title:     meta.Title,
+			Workspace: primaryWS,
+			UpdatedAt: meta.UpdatedAt,
+		})
+		if len(sessions) >= limit {
+			break
+		}
+	}
+
+	return sessions, nil
+}

@@ -7,8 +7,8 @@
 bin/
 dist/
 build/
-relay
-relay.exe
+/relay
+/relay.exe
 
 # Test binary, built with `go test -c`
 *.test
