@@ -500,8 +500,22 @@ func newSendCmd() *cobra.Command {
 				drifted = true
 			}
 			if drifted {
-				l.SessionA = *srcSess
-				l.SessionB = *tgtSess
+				if l.SessionA.ID == freshSrc.ID {
+					l.SessionA.Title = freshSrc.Title
+					l.SessionA.Workspace = freshSrc.Workspace
+				} else if l.SessionA.ID == freshTgt.ID {
+					l.SessionA.Title = freshTgt.Title
+					l.SessionA.Workspace = freshTgt.Workspace
+				}
+
+				if l.SessionB.ID == freshSrc.ID {
+					l.SessionB.Title = freshSrc.Title
+					l.SessionB.Workspace = freshSrc.Workspace
+				} else if l.SessionB.ID == freshTgt.ID {
+					l.SessionB.Title = freshTgt.Title
+					l.SessionB.Workspace = freshTgt.Workspace
+				}
+
 				_ = store.Update(*l)
 			}
 

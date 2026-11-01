@@ -98,9 +98,13 @@ func (l *Link) ResolveEndpoints(targetIdent string) (source, target *Session, er
 	}
 
 	if matchA {
-		return &l.SessionB, &l.SessionA, nil
+		sessB := l.SessionB
+		sessA := l.SessionA
+		return &sessB, &sessA, nil
 	}
-	return &l.SessionA, &l.SessionB, nil
+	sessA := l.SessionA
+	sessB := l.SessionB
+	return &sessA, &sessB, nil
 }
 
 // TransmissionStatus represents the delivery outcome of a transmission.

@@ -80,6 +80,92 @@ func TestResolveEndpoints(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for unknown target agent in link, got nil")
 	}
+
+	// Verify endpoints are isolated copies (mutation does not alter original link)
+	src.Title = "Mutated Title"
+	if link.SessionA.Title == "Mutated Title" || link.SessionB.Title == "Mutated Title" {
+		t.Errorf("expected ResolveEndpoints to return isolated copies, but original link was mutated")
+	}
+}
+
+func TestLink_BidirectionalDriftUpdate(t *testing.T) {
+	link := Link{
+		Name: "test-bidirectional",
+		SessionA: Session{
+			ID:        "sess-agy-1",
+			Agent:     AgentAntigravity,
+			Title:     "Old Agy Title",
+			Workspace: "/ws/mopheus",
+		},
+		SessionB: Session{
+			ID:        "sess-qoder-2",
+			Agent:     AgentQoder,
+			Title:     "Old Qoder Title",
+			Workspace: "/ws/mopheus",
+		},
+	}
+
+	// 1. Forward direction: send to Qoder
+	src, tgt, err := link.ResolveEndpoints("qoder")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if src.ID != "sess-agy-1" || tgt.ID != "sess-qoder-2" {
+		t.Fatalf("forward resolve mismatch: src=%s, tgt=%s", src.ID, tgt.ID)
+	}
+
+	// Simulate Qoder title drift
+	freshQoder := Session{
+		ID:        "sess-qoder-2",
+		Agent:     AgentQoder,
+		Title:     "Drifted Qoder Title",
+		Workspace: "/ws/mopheus",
+	}
+	if link.SessionA.ID == freshQoder.ID {
+		link.SessionA.Title = freshQoder.Title
+	} else if link.SessionB.ID == freshQoder.ID {
+		link.SessionB.Title = freshQoder.Title
+	}
+
+	if link.SessionA.Agent != AgentAntigravity || link.SessionB.Agent != AgentQoder {
+		t.Fatalf("link endpoints corrupted after forward drift")
+	}
+	if link.SessionB.Title != "Drifted Qoder Title" {
+		t.Fatalf("expected updated SessionB title, got %s", link.SessionB.Title)
+	}
+
+	// 2. Reverse direction: reply to Antigravity
+	srcRev, tgtRev, err := link.ResolveEndpoints("agy")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if srcRev.ID != "sess-qoder-2" || tgtRev.ID != "sess-agy-1" {
+		t.Fatalf("reverse resolve mismatch: src=%s, tgt=%s", srcRev.ID, tgtRev.ID)
+	}
+
+	// Simulate Antigravity title drift
+	freshAgy := Session{
+		ID:        "sess-agy-1",
+		Agent:     AgentAntigravity,
+		Title:     "Drifted Agy Title",
+		Workspace: "/ws/mopheus",
+	}
+	if link.SessionA.ID == freshAgy.ID {
+		link.SessionA.Title = freshAgy.Title
+	} else if link.SessionB.ID == freshAgy.ID {
+		link.SessionB.Title = freshAgy.Title
+	}
+
+	// Verify endpoints never swapped or collapsed
+	if link.SessionA.ID != "sess-agy-1" || link.SessionA.Agent != AgentAntigravity {
+		t.Errorf("SessionA collapsed or corrupted: %+v", link.SessionA)
+	}
+	if link.SessionB.ID != "sess-qoder-2" || link.SessionB.Agent != AgentQoder {
+		t.Errorf("SessionB collapsed or corrupted: %+v", link.SessionB)
+	}
+	if link.SessionA.Title != "Drifted Agy Title" {
+		t.Errorf("expected SessionA title 'Drifted Agy Title', got '%s'", link.SessionA.Title)
+	}
 }
 
 func TestFormatPayload(t *testing.T) {
