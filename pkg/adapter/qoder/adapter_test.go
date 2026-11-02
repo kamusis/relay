@@ -111,3 +111,54 @@ func TestQoderAdapter(t *testing.T) {
 		t.Fatalf("expected ErrAmbiguousSession for ambiguous prefix, got %v", err)
 	}
 }
+
+func TestQoderLeaseLock(t *testing.T) {
+	baseDir := setupTestQoderDir(t)
+	ad := New(Config{BaseDir: baseDir, DBPath: ":none:"})
+	sessID := "3c58333e-7024-49d8-a9c4-b2a89629f705"
+
+	// 1. Unlocked lingering lease file should NOT trigger ErrTurnInProgress
+	lockDir := filepath.Join(baseDir, "tasks", sessID, ".task-locks")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatalf("failed to create lock dir: %v", err)
+	}
+	leasePath := filepath.Join(lockDir, "1.lease")
+	if err := os.WriteFile(leasePath, []byte(""), 0o600); err != nil {
+		t.Fatalf("failed to write lease file: %v", err)
+	}
+
+	// Output extraction must succeed because no active process holds the flock
+	output, err := ad.GetLatestAssistantOutput(sessID)
+	if err != nil {
+		t.Fatalf("expected success with unlocked lingering lease, got: %v", err)
+	}
+	if output != "LGTM. No blocking items found." {
+		t.Errorf("unexpected output: %s", output)
+	}
+}
+
+func TestQoderTrailingMetadataParsing(t *testing.T) {
+	base := t.TempDir()
+	projDir := filepath.Join(base, "projects", "-test-trailing")
+	_ = os.MkdirAll(projDir, 0o755)
+
+	sessID := "aaaa1111-2222-3333-4444-555566667777"
+	jsonlPath := filepath.Join(projDir, sessID+".jsonl")
+
+	// stop_reason inside message, and active-leaf pointing to a trailing non-assistant event
+	lines := `{"type":"workspace-directories","directories":["/test"]}
+{"type":"assistant","uuid":"turn-1","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Verdict: APPROVED"}]}}
+{"type":"active-leaf","leafUuid":"non-assistant-trailing-event"}
+{"type":"runtime-config","timestamp":1793560324100}
+`
+	_ = os.WriteFile(jsonlPath, []byte(lines), 0o600)
+
+	ad := New(Config{BaseDir: base, DBPath: ":none:"})
+	output, err := ad.GetLatestAssistantOutput(sessID)
+	if err != nil {
+		t.Fatalf("expected fallback to latest assistant text when active-leaf is non-assistant, got: %v", err)
+	}
+	if output != "Verdict: APPROVED" {
+		t.Errorf("expected 'Verdict: APPROVED', got '%s'", output)
+	}
+}

@@ -116,16 +116,39 @@ Once Qoder finishes generating its review:
    # Or forwarding annotated with directive:
    relay send <link-name> --to agy -m "查收 Qoder 评审结论与整改意见" --append
    ```
-2. The latest assistant turn from Qoder is immediately delivered into the source Antigravity session.
+2. The latest assistant turn from Qoder is immediately delivered into the source Antigravity session with audited Transmission UUID.
 3. Check status:
    ```bash
    relay log <link-name> -n 2
    ```
 
+### Step 6: Multi-Round Convergence Loop (If Changes Requested)
+If Qoder requested changes or found blocking bugs in Round 1:
+1. **Implement the Fixes in Workspace**:
+   - Make the necessary code/test edits in the worktree.
+   - Run verification (e.g. `go test`, `pnpm typecheck`, `vitest`).
+2. **Send Round 2 Fix Evidence to Qoder via Direct Message mode (`-m`)**:
+   ```bash
+   relay send <link-name> --to qoder -m "已针对 Round 1 评审意见完成整改：1. ...; 2. ...。验证已全部通过。请进行 Round 2 复核并给出终审裁决（Verdict: APPROVED）。"
+   ```
+3. **Retrieve Round 2 Verdict back to Antigravity**:
+   ```bash
+   relay send <link-name> --to agy
+   ```
+4. Confirm final approval (`Verdict: APPROVED`) before completing the development turn or preparing PR.
+
 ---
 
 ## 3. Failure Triage & Guardrails
 
+- **ABSOLUTE RED LINE: Never Bypass Relay by Reading Private Session Files**:
+  - **NEVER** use `tail ~/.qoder/projects/*.jsonl | jq`, `cat`, or direct SQLite queries to "peek" or "extract" counterpart outputs behind Relay's back.
+  - Doing so breaks the audit chain (`relay log`), bypasses state machine synchronization, and risks reading partial in-progress turns.
+  - All communication between Antigravity and Qoder must strictly flow through `relay send`.
+- **Handling Busy State (`source agent 'qoder' is currently busy generating output`)**:
+  - Multi-tool deep reviews typically take 30–60 seconds.
+  - If `relay send <link> --to agy` reports that Qoder is still busy, **DO NOT resort to raw file hacks**.
+  - Wait 5–10 seconds and re-run: `relay send <link-name> --to agy`.
 - **Exit code 127 (`qodercli: command not found`)**:
   Ensure PATH includes `~/.local/bin`: `export PATH=$PATH:$HOME/.local/bin`.
 - **Exit code 1 (`Not logged in · Please run /login`)**:
@@ -133,7 +156,7 @@ Once Qoder finishes generating its review:
 - **`signal: killed` / Execution Timed Out**:
   If Qoder performs very deep multi-tool inspections exceeding the default 300s, override via:
   ```bash
-  RELAY_DELIVERY_TIMEOUT=600s relay send <link-name> --to qoder "<prompt>"
+  RELAY_DELIVERY_TIMEOUT=600s relay send <link-name> --to qoder -m "<prompt>"
   ```
 - **Permission Prompt Blocking**:
   `pkg/adapter/qoder` automatically passes `--dangerously-skip-permissions` so non-interactive tools (`go test`, `git diff`) run without stalling.

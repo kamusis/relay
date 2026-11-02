@@ -61,13 +61,23 @@ func TestQoderFixture(t *testing.T) {
 		_ = os.RemoveAll(filepath.Join(testdataDir, "tasks"))
 	}()
 
+	f, err := os.OpenFile(leaseFile, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("failed to open lease file: %v", err)
+	}
+	defer f.Close()
+
+	if err := lockFileExclusively(f); err != nil {
+		t.Fatalf("failed to lock lease file: %v", err)
+	}
+
 	_, err = ad.GetLatestAssistantOutput("e959378f")
 	if !errors.Is(err, adapter.ErrTurnInProgress) {
 		t.Errorf("expected ErrTurnInProgress when lease lock present, got %v", err)
 	}
 
-	// Remove lease lock and verify it succeeds again
-	_ = os.Remove(leaseFile)
+	// Release lease lock and verify it succeeds again
+	_ = unlockFile(f)
 	outputAfterLock, err := ad.GetLatestAssistantOutput("e959378f")
 	if err != nil {
 		t.Fatalf("expected success after lock removal, got %v", err)

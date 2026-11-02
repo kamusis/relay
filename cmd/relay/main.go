@@ -577,6 +577,10 @@ func newSendCmd() *cobra.Command {
 						return fmt.Errorf("failed to extract output from source session: %w", err)
 					}
 				}
+				if strings.TrimSpace(output) == "" {
+					return fmt.Errorf("extracted output from source session '%s:%s' is empty\nHint: ensure the source agent has finished generating output, or use -m \"<message>\" to send a direct message",
+						srcSess.Agent, adapter.ShortID(freshSrc.ID))
+				}
 				body = output
 				directive = message
 				fmt.Printf("Relaying latest output from %s (%s) -> %s (%s)...\n",

@@ -362,11 +362,20 @@ func (a *Adapter) GetSession(sessionID string) (*adapter.Session, error) {
 	}, nil
 }
 
-// checkLeaseLock checks if an active task lease lock exists for this session.
+// checkLeaseLock checks if an active task lease lock is currently held by a running process.
 func (a *Adapter) checkLeaseLock(sessionID string) bool {
 	lockDir := filepath.Join(a.tasksDir(), sessionID, ".task-locks")
-	matches, _ := filepath.Glob(filepath.Join(lockDir, "*.lease"))
-	return len(matches) > 0
+	matches, err := filepath.Glob(filepath.Join(lockDir, "*.lease"))
+	if err != nil || len(matches) == 0 {
+		return false
+	}
+
+	for _, m := range matches {
+		if probeLeaseLocked(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetLatestAssistantOutput extracts the latest completed assistant turn for a session.
@@ -410,8 +419,9 @@ func (a *Adapter) GetLatestAssistantOutput(sessionID string) (string, error) {
 			LeafUUID   string `json:"leafUuid"`
 			StopReason string `json:"stop_reason"`
 			Message    *struct {
-				Role    string `json:"role"`
-				Content []struct {
+				Role       string `json:"role"`
+				StopReason string `json:"stop_reason"`
+				Content    []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"content"`
@@ -432,12 +442,16 @@ func (a *Adapter) GetLatestAssistantOutput(sessionID string) (string, error) {
 				}
 			}
 			txt := sb.String()
+			stopReason := evt.StopReason
+			if stopReason == "" && evt.Message.StopReason != "" {
+				stopReason = evt.Message.StopReason
+			}
 			assistantTurns[evt.UUID] = struct {
 				Text       string
 				StopReason string
 			}{
 				Text:       txt,
-				StopReason: evt.StopReason,
+				StopReason: stopReason,
 			}
 			if strings.TrimSpace(txt) != "" {
 				lastAssistantWithText = evt.UUID
@@ -448,25 +462,23 @@ func (a *Adapter) GetLatestAssistantOutput(sessionID string) (string, error) {
 	// 1. Try active leaf first
 	if activeLeaf != "" {
 		turn, ok := assistantTurns[activeLeaf]
-		if !ok {
-			// Active leaf is not an assistant message (e.g. user prompt or ongoing tool execution).
-			// Refuse to silently fall back to historical turns from previous rounds.
-			return "", fmt.Errorf("%w: active turn %s is not a completed assistant response", adapter.ErrTurnInProgress, adapter.ShortID(activeLeaf))
+		if ok {
+			if turn.StopReason != "" && turn.StopReason != "end_turn" {
+				return "", fmt.Errorf("%w: assistant turn %s is still generating (stop_reason: %s)", adapter.ErrTurnInProgress, adapter.ShortID(activeLeaf), turn.StopReason)
+			}
+			if strings.TrimSpace(turn.Text) != "" {
+				return strings.TrimSpace(turn.Text), nil
+			}
 		}
-		if turn.StopReason != "" && turn.StopReason != "end_turn" {
-			return "", fmt.Errorf("%w: assistant turn %s is still generating (stop_reason: %s)", adapter.ErrTurnInProgress, adapter.ShortID(activeLeaf), turn.StopReason)
-		}
-		if strings.TrimSpace(turn.Text) == "" {
-			return "", fmt.Errorf("%w: assistant turn %s contains no text output", adapter.ErrNoOutputFound, adapter.ShortID(activeLeaf))
-		}
-		return strings.TrimSpace(turn.Text), nil
+		// If activeLeaf is not found in assistantTurns or has empty text (e.g. activeLeaf points to trailing system metadata),
+		// fall back to lastAssistantWithText.
 	}
 
-	// 2. Legacy fallback only if session file completely lacks active-leaf marker
+	// 2. Fallback to latest assistant message with text
 	if lastAssistantWithText != "" {
 		turn := assistantTurns[lastAssistantWithText]
 		if turn.StopReason != "" && turn.StopReason != "end_turn" {
-			return "", adapter.ErrTurnInProgress
+			return "", fmt.Errorf("%w: assistant turn %s is still generating (stop_reason: %s)", adapter.ErrTurnInProgress, adapter.ShortID(lastAssistantWithText), turn.StopReason)
 		}
 		if strings.TrimSpace(turn.Text) != "" {
 			return strings.TrimSpace(turn.Text), nil
