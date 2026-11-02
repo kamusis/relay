@@ -18,6 +18,7 @@ import (
 	"github.com/kamusis/relay/pkg/adapter/qoder"
 	"github.com/kamusis/relay/pkg/history"
 	"github.com/kamusis/relay/pkg/link"
+	"github.com/kamusis/relay/pkg/prompt"
 	"github.com/kamusis/relay/pkg/registry"
 )
 
@@ -42,6 +43,7 @@ to directly pass messages, reviews, and tasks to each other in the background.`,
 	rootCmd.AddCommand(newLinkCmd())
 	rootCmd.AddCommand(newSendCmd())
 	rootCmd.AddCommand(newLogCmd())
+	rootCmd.AddCommand(newTemplateCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -456,22 +458,26 @@ func parseAndResolveEndpoint(ep string) (*adapter.Session, error) {
 
 func newSendCmd() *cobra.Command {
 	var (
-		toTarget   string
-		msgFlag    string
-		appendFlag bool
-		forceFlag  bool
+		toTarget     string
+		msgFlag      string
+		templateFlag string
+		appendFlag   bool
+		forceFlag    bool
 	)
 
 	sendCmd := &cobra.Command{
-		Use:   "send <link_name> --to <target_agent_or_id> [-m message] [--append] [--force]",
+		Use:   "send <link_name> --to <target_agent_or_id> [-m message] [-t template] [--append] [--force]",
 		Short: "Relay output or messages between linked agents",
 		Example: `  # 1. Direct message mode: sends only the specified message (bypasses transcript & idle checks)
   relay send moc-qoder --to qoder -m "请对 commit 28ef9212 进行代码复审"
 
-  # 2. Pure automatic forwarding: extracts latest output from counterpart
+  # 2. Template-driven review mode: invokes /verification-before-completion
+  relay send moc-qoder --to qoder -t verification -m "工单: 拆解前端弹窗\nWorktree: .worktrees/split-dialog"
+
+  # 3. Pure automatic forwarding: extracts latest output from counterpart
   relay send moc-qoder --to agy
 
-  # 3. Forward and append: extracts latest output and annotates with directive
+  # 4. Forward and append: extracts latest output and annotates with directive
   relay send moc-qoder --to agy -m "重点检查内存泄露" --append`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -559,15 +565,34 @@ func newSendCmd() *cobra.Command {
 			var body string
 			var directive string
 
-			if message != "" && !appendFlag {
-				// Mode 1: Direct Message (-m "...", without --append)
-				// Sends the message directly as the transmission body.
-				// Does NOT touch source transcript or idle status.
-				body = message
-				fmt.Printf("Relaying direct message to %s (%s)...\n",
-					tgtSess.Agent, adapter.ShortID(freshTgt.ID))
+			tmplData := prompt.TemplateData{
+				Message:     message,
+				Link:        linkName,
+				FromAgent:   string(srcSess.Agent),
+				FromSession: freshSrc.ID,
+				ToAgent:     string(tgtSess.Agent),
+				ToSession:   freshTgt.ID,
+			}
+			promptMgr := prompt.NewDefaultManager()
+
+			if (message != "" || templateFlag != "") && !appendFlag {
+				// Mode 1: Direct Message (-m "...", and/or -t <template>, without --append)
+				// Sends message/template directly as transmission body without touching source transcript.
+				if templateFlag != "" {
+					rendered, err := promptMgr.Render(templateFlag, tmplData)
+					if err != nil {
+						return fmt.Errorf("failed to render template: %w", err)
+					}
+					body = rendered
+					fmt.Printf("Relaying message with template '%s' to %s (%s)...\n",
+						templateFlag, tgtSess.Agent, adapter.ShortID(freshTgt.ID))
+				} else {
+					body = message
+					fmt.Printf("Relaying direct message to %s (%s)...\n",
+						tgtSess.Agent, adapter.ShortID(freshTgt.ID))
+				}
 			} else {
-				// Mode 2: Pure Forwarding (no message) OR Mode 3: Forward + Append (-m "..." --append)
+				// Mode 2: Pure Forwarding (no message, no template) OR Mode 3: Forward + Append (-m "..." --append)
 				output, err := srcAdapter.GetLatestAssistantOutput(freshSrc.ID)
 				if err != nil {
 					if errors.Is(err, adapter.ErrTurnInProgress) && !forceFlag {
@@ -583,6 +608,14 @@ func newSendCmd() *cobra.Command {
 				}
 				body = output
 				directive = message
+				if templateFlag != "" {
+					tmplData.Output = output
+					rendered, err := promptMgr.Render(templateFlag, tmplData)
+					if err != nil {
+						return fmt.Errorf("failed to render template: %w", err)
+					}
+					directive = rendered
+				}
 				fmt.Printf("Relaying latest output from %s (%s) -> %s (%s)...\n",
 					srcSess.Agent, adapter.ShortID(freshSrc.ID), tgtSess.Agent, adapter.ShortID(freshTgt.ID))
 			}
@@ -653,10 +686,89 @@ func newSendCmd() *cobra.Command {
 
 	sendCmd.Flags().StringVar(&toTarget, "to", "", "Target agent (agy, qoder) or session ID in the link")
 	sendCmd.Flags().StringVarP(&msgFlag, "message", "m", "", "Explicit message content to deliver directly")
+	sendCmd.Flags().StringVarP(&templateFlag, "template", "t", "", "Optional prompt template name or path (e.g. 'verification', 're-review')")
 	sendCmd.Flags().BoolVar(&appendFlag, "append", false, "Append message to the latest output extracted from source session")
-	sendCmd.Flags().BoolVar(&forceFlag, "force", false, "Bypass busy state checks on source session when extracting output")
+	sendCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Bypass busy state checks on source session when extracting output")
 	_ = sendCmd.MarkFlagRequired("to")
 	return sendCmd
+}
+
+// ============================================================================
+// 4. Template Commands (`relay template list`, `relay template show <name>`)
+// ============================================================================
+
+func newTemplateCmd() *cobra.Command {
+	templateCmd := &cobra.Command{
+		Use:   "template",
+		Short: "Manage and preview prompt templates for relay transmissions",
+	}
+
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all available prompt templates (built-in and custom)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := prompt.NewDefaultManager()
+			templates, err := mgr.List()
+			if err != nil {
+				return err
+			}
+
+			if len(templates) == 0 {
+				fmt.Println("No templates found.")
+				return nil
+			}
+
+			maxName := 12
+			maxSrc := 10
+			for _, t := range templates {
+				if len(t.Name) > maxName {
+					maxName = len(t.Name)
+				}
+				if len(t.Source) > maxSrc {
+					maxSrc = len(t.Source)
+				}
+			}
+
+			fmt.Printf("%s  %s  %s\n",
+				runewidth.FillRight("NAME", maxName),
+				runewidth.FillRight("SOURCE", maxSrc),
+				"DESCRIPTION",
+			)
+
+			for _, t := range templates {
+				fmt.Printf("%s  %s  %s\n",
+					runewidth.FillRight(t.Name, maxName),
+					runewidth.FillRight(t.Source, maxSrc),
+					t.Description,
+				)
+			}
+			return nil
+		},
+	}
+
+	showCmd := &cobra.Command{
+		Use:   "show <template_name_or_file>",
+		Short: "Display the content and metadata of a prompt template",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := prompt.NewDefaultManager()
+			t, err := mgr.Get(args[0])
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Template:    %s\n", t.Name)
+			fmt.Printf("Source:      %s\n", t.Source)
+			fmt.Printf("Description: %s\n", t.Description)
+			fmt.Println("\n--- Template Content ---")
+			fmt.Println(t.Content)
+			return nil
+		},
+	}
+
+	templateCmd.AddCommand(listCmd)
+	templateCmd.AddCommand(showCmd)
+	return templateCmd
 }
 
 // ============================================================================

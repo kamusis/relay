@@ -88,19 +88,25 @@ When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"
    - Inform the user that the communication link has been created.
 
 ### Step 4: Execute the Relay to Qoder
-1. Send the review request from Antigravity to Qoder using **Direct Message mode (`-m`)**:
-   ```bash
-   relay send <link-name> --to qoder -m "<structured_review_request>"
-   ```
-   - **CRITICAL**: Always use `-m` to supply a clean, self-contained, structured review prompt (specifying target branch, commit hash, and verification checklist).
-   - Using `-m` delivers the message directly:
+1. Send the review request from Antigravity to Qoder:
+   - **For Standard Code Review (Mandatory for Review Gate)**:
+     Use **Template mode (`-t verification`)** to automatically drive `/verification-before-completion` (Phase A `ponytail-review` + Phase B `mopheus-code-review` / repository guardrails):
+     ```bash
+     relay send <link-name> --to qoder -t verification -m "工单: <工单标题/ID>\nWorktree: <worktree_path>\n分支: <branch_name>\n【重点关注】<关注模块或改动说明>"
+     ```
+   - **For Free / Ad-hoc Messaging**:
+     `-m` is completely freeform and unrestricted when `-t` is omitted:
+     ```bash
+     relay send <link-name> --to qoder -m "请快速看下这段代码是否有竞态风险"
+     ```
+   - Using `-m` (with or without `-t`) delivers directly:
      - It **bypasses source transcript extraction** (completely avoiding transcript contamination from intermediate peripheral chat like "已停止重定向").
      - It **bypasses busy state checks** (allowing the active agent to call `relay send` without self-deadlock).
-   - *Example*:
-     ```bash
-     relay send <link-name> --to qoder -m "请对最新提交 commit 28ef9212 进行代码与架构深入复审，重点关注：1. 正确性与边界处理；2. 架构规范对齐；3. 并发安全与回归风险。"
-     ```
-2. **Execution Characteristics**:
+2. **Template Management**:
+   - List available templates: `relay template list`
+   - Inspect template content: `relay template show verification`
+   - Custom templates can be placed in `~/.config/relay/templates/*.tmpl`.
+3. **Execution Characteristics**:
    - Qoder will run headlessly via `qodercli` without needing the desktop GUI app.
    - For multi-tool reasoning tasks, Qoder may run `git log`, inspect files, or run tests. It typically completes in 30–60 seconds.
    - `relay send` will wait for Qoder to complete and print delivery details (Transmission ID, From, To, Relayed Body bytes).
@@ -127,9 +133,9 @@ If Qoder requested changes or found blocking bugs in Round 1:
 1. **Implement the Fixes in Workspace**:
    - Make the necessary code/test edits in the worktree.
    - Run verification (e.g. `go test`, `pnpm typecheck`, `vitest`).
-2. **Send Round 2 Fix Evidence to Qoder via Direct Message mode (`-m`)**:
+2. **Send Round 2 Fix Evidence to Qoder via `-t re-review`**:
    ```bash
-   relay send <link-name> --to qoder -m "已针对 Round 1 评审意见完成整改：1. ...; 2. ...。验证已全部通过。请进行 Round 2 复核并给出终审裁决（Verdict: APPROVED）。"
+   relay send <link-name> --to qoder -t re-review -m "已针对 Round 1 评审意见完成整改：1. ...; 2. ...。验证已全部通过，请核验阻断项闭环并给出终审裁决。"
    ```
 3. **Retrieve Round 2 Verdict back to Antigravity**:
    ```bash
