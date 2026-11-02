@@ -472,7 +472,7 @@ func newSendCmd() *cobra.Command {
   relay send moc-qoder --to qoder -m "请对 commit 28ef9212 进行代码复审"
 
   # 2. Template-driven review mode: invokes /verification-before-completion
-  relay send moc-qoder --to qoder -t verification -m "工单: 拆解前端弹窗\nWorktree: .worktrees/split-dialog"
+  relay send moc-qoder --to qoder -t review -m "工单: 拆解前端弹窗\nWorktree: .worktrees/split-dialog"
 
   # 3. Pure automatic forwarding: extracts latest output from counterpart
   relay send moc-qoder --to agy
@@ -686,7 +686,7 @@ func newSendCmd() *cobra.Command {
 
 	sendCmd.Flags().StringVar(&toTarget, "to", "", "Target agent (agy, qoder) or session ID in the link")
 	sendCmd.Flags().StringVarP(&msgFlag, "message", "m", "", "Explicit message content to deliver directly")
-	sendCmd.Flags().StringVarP(&templateFlag, "template", "t", "", "Optional prompt template name or path (e.g. 'verification', 're-review')")
+	sendCmd.Flags().StringVarP(&templateFlag, "template", "t", "", "Optional prompt template name or path (e.g. 'review', 'followup')")
 	sendCmd.Flags().BoolVar(&appendFlag, "append", false, "Append message to the latest output extracted from source session")
 	sendCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Bypass busy state checks on source session when extracting output")
 	_ = sendCmd.MarkFlagRequired("to")

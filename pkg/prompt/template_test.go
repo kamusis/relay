@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-func TestBuiltinVerification(t *testing.T) {
+func TestBuiltinReview(t *testing.T) {
 	mgr := NewDefaultManager()
 
-	// 1. Render verification with Message
-	out, err := mgr.Render("verification", TemplateData{
+	// 1. Render review with Message
+	out, err := mgr.Render("review", TemplateData{
 		Message: "工单: 拆解前端弹窗\nWorktree: .worktrees/split-dialog",
 	})
 	if err != nil {
@@ -31,8 +31,8 @@ func TestBuiltinVerification(t *testing.T) {
 		t.Errorf("expected message content in output, got: %s", out)
 	}
 
-	// 2. Render verification without Message
-	outNoMsg, err := mgr.Render("verification", TemplateData{})
+	// 2. Render review without Message
+	outNoMsg, err := mgr.Render("review", TemplateData{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,10 +41,10 @@ func TestBuiltinVerification(t *testing.T) {
 	}
 }
 
-func TestBuiltinReReview(t *testing.T) {
+func TestBuiltinFollowup(t *testing.T) {
 	mgr := NewDefaultManager()
 
-	out, err := mgr.Render("re-review", TemplateData{
+	out, err := mgr.Render("followup", TemplateData{
 		Message: "已补齐单元测试用例",
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestTemplateNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for non-existent template, got nil")
 	}
-	if !strings.Contains(err.Error(), "verification") {
+	if !strings.Contains(err.Error(), "review") {
 		t.Errorf("expected error message to suggest available templates, got: %v", err)
 	}
 }

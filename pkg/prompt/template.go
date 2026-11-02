@@ -55,10 +55,10 @@ func NewManager(customDir string) *Manager {
 }
 
 func (m *Manager) registerBuiltins() {
-	m.builtins["verification"] = TemplateInfo{
-		Name:        "verification",
+	m.builtins["review"] = TemplateInfo{
+		Name:        "review",
 		Source:      "builtin",
-		Description: "Dual-engine review driving /verification-before-completion (ponytail-review + architecture/mopheus-code-review)",
+		Description: "Initial dual-engine code review driving /verification-before-completion (ponytail-review + architecture/mopheus-code-review)",
 		Content: strings.TrimSpace(`
 请严格执行 ` + "`/verification-before-completion`" + ` 技能对本改动进行双引擎审查：
 
@@ -80,10 +80,10 @@ func (m *Manager) registerBuiltins() {
 {{end}}`),
 	}
 
-	m.builtins["re-review"] = TemplateInfo{
-		Name:        "re-review",
+	m.builtins["followup"] = TemplateInfo{
+		Name:        "followup",
 		Source:      "builtin",
-		Description: "Follow-up review verifying closure of blocking items from previous round",
+		Description: "Follow-up review verifying closure of blocking items from previous rounds",
 		Content: strings.TrimSpace(`
 请针对上一轮审查遗留意见的修复改动进行复核（执行 ` + "`/verification-before-completion`" + `）：
 

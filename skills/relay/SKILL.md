@@ -90,9 +90,9 @@ When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"
 ### Step 4: Execute the Relay to Qoder
 1. Send the review request from Antigravity to Qoder:
    - **For Standard Code Review (Mandatory for Review Gate)**:
-     Use **Template mode (`-t verification`)** to automatically drive `/verification-before-completion` (Phase A `ponytail-review` + Phase B `mopheus-code-review` / repository guardrails):
+     Use **Template mode (`-t review`)** to automatically drive `/verification-before-completion` (Phase A `ponytail-review` + Phase B `mopheus-code-review` / repository guardrails):
      ```bash
-     relay send <link-name> --to qoder -t verification -m "工单: <工单标题/ID>\nWorktree: <worktree_path>\n分支: <branch_name>\n【重点关注】<关注模块或改动说明>"
+     relay send <link-name> --to qoder -t review -m "工单: <工单标题/ID>\nWorktree: <worktree_path>\n分支: <branch_name>\n【重点关注】<关注模块或改动说明>"
      ```
    - **For Free / Ad-hoc Messaging**:
      `-m` is completely freeform and unrestricted when `-t` is omitted:
@@ -104,7 +104,7 @@ When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"
      - It **bypasses busy state checks** (allowing the active agent to call `relay send` without self-deadlock).
 2. **Template Management**:
    - List available templates: `relay template list`
-   - Inspect template content: `relay template show verification`
+   - Inspect template content: `relay template show review`
    - Custom templates can be placed in `~/.config/relay/templates/*.tmpl`.
 3. **Execution Characteristics**:
    - Qoder will run headlessly via `qodercli` without needing the desktop GUI app.
@@ -133,9 +133,9 @@ If Qoder requested changes or found blocking bugs in Round 1:
 1. **Implement the Fixes in Workspace**:
    - Make the necessary code/test edits in the worktree.
    - Run verification (e.g. `go test`, `pnpm typecheck`, `vitest`).
-2. **Send Round 2 Fix Evidence to Qoder via `-t re-review`**:
+2. **Send Round 2+ Fix Evidence to Qoder via `-t followup`**:
    ```bash
-   relay send <link-name> --to qoder -t re-review -m "已针对 Round 1 评审意见完成整改：1. ...; 2. ...。验证已全部通过，请核验阻断项闭环并给出终审裁决。"
+   relay send <link-name> --to qoder -t followup -m "已针对上一轮评审意见完成整改：1. ...; 2. ...。验证已全部通过，请核验阻断项闭环并给出终审裁决。"
    ```
 3. **Retrieve Round 2 Verdict back to Antigravity**:
    ```bash

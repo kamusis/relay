@@ -15,20 +15,20 @@ func TestTemplateCommands(t *testing.T) {
 		t.Fatalf("template list failed: %v", err)
 	}
 
-	// Test template show verification
+	// Test template show review
 	showBuf := bytes.Buffer{}
 	templateCmd.SetOut(&showBuf)
-	templateCmd.SetArgs([]string{"show", "verification"})
+	templateCmd.SetArgs([]string{"show", "review"})
 	if err := templateCmd.Execute(); err != nil {
-		t.Fatalf("template show verification failed: %v", err)
+		t.Fatalf("template show review failed: %v", err)
 	}
 
-	// Test template show re-review
+	// Test template show followup
 	showBuf2 := bytes.Buffer{}
 	templateCmd.SetOut(&showBuf2)
-	templateCmd.SetArgs([]string{"show", "re-review"})
+	templateCmd.SetArgs([]string{"show", "followup"})
 	if err := templateCmd.Execute(); err != nil {
-		t.Fatalf("template show re-review failed: %v", err)
+		t.Fatalf("template show followup failed: %v", err)
 	}
 }
 
