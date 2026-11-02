@@ -32,10 +32,11 @@ Even though agents share the same codebase on disk, **their conversation session
 ## Core Features
 
 - **Zero Daemons & Single Binary**: Written in pure Go, CGO-free, requiring no persistent background services or external runtime dependencies.
-- **Session Mesh Architecture**: Create explicit, named, bidirectional communication channels (`Links`) between any two agent sessions across arbitrary topologies.
+- **Session Mesh Architecture**: Create explicit, named, bidirectional communication channels (`Links`) between any two agent sessions across arbitrary topologies, automatically sorted by latest activity (`LAST RELAY`).
 - **Headless Peer Reviews**: Interacts directly with [Qoder CLI](https://qoder.com/cli) (`qodercli`) and the headless worker runtime (`qoder-worker-runtime`); reviews happen entirely in the background without needing the desktop GUI app open.
+- **Prompt Templates & Dual-Engine Verification**: Built-in prompt templates (`review`, `followup`) that automatically drive structured code reviews (`/verification-before-completion`, combining `ponytail-review` with architectural guardrails like `mopheus-code-review`), plus extensible custom templates.
 - **Transparent Cross-Boundary Support**: Automatically resolves Windows WSL / Linux / macOS boundary friction (reading desktop SQLite databases with WAL locks, auto-discovering Antigravity Language Server endpoints via `/proc`, and managing permissions).
-- **Concurrency & Safety**: File-locking (`flock`) prevents race conditions on link state, fail-closed credential discovery protects tokens, and stale-turn detection prevents delivering outdated turns.
+- **Concurrency & Safety**: File-locking (`flock`) prevents race conditions on link state, non-blocking OS lease-lock probing prevents premature output extraction, and fail-closed credential discovery protects tokens.
 - **Complete Audit Trail**: Append-only transaction logging (`~/.config/relay/history.jsonl`) tracking full payloads, delivery status, timestamps, and error diagnostics.
 
 ---
@@ -59,6 +60,39 @@ graph TD
     Registry --> Future
     Dispatcher --> Hist["Audit Logger (~/.config/relay/history.jsonl)"]
 ```
+
+### The Asymmetric Orchestrator-Worker Pattern (Why Reviewers Never Touch Relay)
+
+In practical workflows, developers interact primarily with **one primary agent** (e.g., Google Antigravity). Relay is deliberately architected as an **Asymmetric Orchestrator-Worker pipeline** rather than symmetric peer-to-peer chat:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer
+    participant AGY as Antigravity (Orchestrator)
+    participant Relay as Relay CLI
+    participant Qoder as Qoder Worker (Reviewer)
+
+    Dev->>AGY: "Please have Qoder review my changes"
+    Note over AGY: AGY drives the entire loop via relay skill
+    AGY->>Relay: relay send <link> --to qoder -t review -m "..."
+    Relay->>Qoder: Injects prompt into headless session
+    Note over Qoder: Pure review: runs diff & tests<br/>Zero Relay awareness or skill needed
+    Qoder-->>Relay: Writes Markdown review verdict
+    AGY->>Relay: relay send <link> --to agy (Pulls verdict)
+    Relay->>AGY: Injects Qoder's review into AGY
+    Note over AGY: AGY addresses comments in worktree
+    AGY->>Relay: relay send <link> --to qoder -t followup -m "..."
+    Relay->>Qoder: Re-verifies fixes
+    Qoder-->>Relay: Outputs "Verdict: APPROVED"
+    AGY->>Relay: relay send <link> --to agy (Pulls approval)
+    AGY->>Dev: Presents complete review & verification summary
+```
+
+#### Why the Reviewer Agent Never Uses Relay:
+1. **Zero-Invasion on Reviewer**: Qoder operates 100% as a standard code reviewer. It requires **no Relay skill, no CLI installation in its context, and zero awareness of link names or session IDs**. It only needs to do what it does best: inspect diffs, verify architectural compliance, and run tests.
+2. **Single-Ended Orchestration (Zero Deadlocks)**: All lifecycle transitions (`dispatch review -> pull verdict -> fix code -> dispatch followup -> pull approval`) are deterministically driven by the active Orchestrator. This eliminates multi-agent race conditions, session lock contention, or split-brain deadlocks.
+3. **Single-Pane Experience**: The human developer never leaves their primary IDE chat window. Antigravity acts as the active driver, delegating to Qoder in the background and presenting the final result.
 
 ---
 
@@ -86,6 +120,12 @@ export PATH=$PATH:$HOME/.local/bin
 
 ## Quick Start
 
+> [!TIP]
+> **Autonomous Agent Mode vs. Manual CLI Mode**
+> In daily development, **you don't even need to run these CLI commands manually**. Simply tell Antigravity in your chat window: *"Have Qoder review my changes"*. 
+> Antigravity will autonomously discover sessions, create the link, dispatch the `-t review` request, pull the verdict via `relay send --to agy`, fix blocking issues, and follow up until approved.
+> The manual CLI steps below show what Antigravity executes under the hood (and what human developers can run from a terminal).
+
 ### 1. Discover Active Sessions
 Inspect conversation sessions across all connected agents in the current workspace:
 ```bash
@@ -104,7 +144,7 @@ Link the Antigravity coder session and the Qoder reviewer session:
 relay link create dev-review 3dfb0b87 e959378f
 ```
 
-View active links:
+View active links (automatically sorted by most recently active `LAST RELAY`):
 ```bash
 relay link list
 ```
@@ -115,14 +155,18 @@ dev-review  antigravity:3dfb0b87 (Feature Implementation) qoder:e959378f (Archit
 ```
 
 ### 3. Relay Review Request to Reviewer
-Send a review request from Antigravity to Qoder in direct message mode (`-m`):
+Send a review request using the built-in **`review` template** to automatically drive dual-engine verification:
 ```bash
-relay send dev-review --to qoder -m "Please review the latest commit 28ef9212 on main, focusing on security and error handling"
+# Template Mode: wraps prompt with /verification-before-completion directives
+relay send dev-review --to qoder -t review -m "Commit: 28ef9212 on main\nWorktree: .worktrees/auth-refactor"
+
+# Or Direct Message Mode: sends freeform message without template
+relay send dev-review --to qoder -m "Please check if there are any race conditions in this helper"
 ```
 Qoder runs headlessly in the background, executing verification tools (`git log`, `go test`, file inspections) and producing an authoritative review report.
 
 ### 4. Relay Review Verdict Back to Coder
-Once Qoder finishes, relay its review findings back to Antigravity (using pure forwarding or with an appended directive):
+Once Qoder finishes, relay its review findings back to Antigravity:
 ```bash
 # Pure forwarding mode: injects Qoder's complete review verdict into Antigravity
 relay send dev-review --to agy
@@ -132,7 +176,17 @@ relay send dev-review --to agy -m "Please address priority items from Qoder's re
 ```
 Antigravity receives the complete Markdown review directly in its conversation context and begins applying fixes.
 
-### 5. Inspect Audit Log
+### 5. Multi-Round Follow-up (Follow-up Review)
+If Qoder requested changes, send the fix verification using the **`followup` template**:
+```bash
+relay send dev-review --to qoder -t followup -m "Addressed all blocking review comments; all unit tests pass"
+```
+Once Qoder gives the final approval (`Verdict: APPROVED`), pull the confirmation back:
+```bash
+relay send dev-review --to agy
+```
+
+### 6. Inspect Audit Log
 ```bash
 relay log dev-review -n 5
 ```
@@ -164,13 +218,16 @@ relay session list -g
 ```
 
 ### `relay link`
-Manage named communication channels.
+Manage named communication channels. Links are sorted by `LAST RELAY` activity descending.
 ```bash
 # Create a link (supports UUID prefixes)
 relay link create <link-name> <session-a> <session-b>
 
-# List all links with last relay status
+# List all links with last relay status (most active links first)
 relay link list
+
+# Force live re-verification of session existence across adapters
+relay link list -r
 
 # Delete a link
 relay link rm <link-name>
@@ -179,14 +236,31 @@ relay link rm <link-name>
 ### `relay send`
 Transmit outputs or explicit messages between linked agents.
 ```bash
-# 1. Direct Message Mode (sends only -m, bypasses source transcript & busy checks)
+# 1. Direct Message Mode (sends freeform message, bypasses source transcript & busy checks)
 relay send <link-name> --to <target-agent> -m "Review commit 28ef9212 focusing on security"
 
-# 2. Pure Forwarding Mode (automatically extracts counterpart's latest assistant output)
+# 2. Template-Driven Review Mode (applies template to structure the review request)
+relay send <link-name> --to <target-agent> -t review -m "Ticket: MOC-102\nWorktree: .worktrees/auth"
+
+# 3. Follow-up Review Mode (verifies closure of blocking items from previous rounds)
+relay send <link-name> --to <target-agent> -t followup -m "Fixed parser boundary regression"
+
+# 4. Pure Forwarding Mode (automatically extracts counterpart's latest assistant output)
 relay send <link-name> --to <target-agent>
 
-# 3. Forward + Append Mode (extracts counterpart's latest output and annotates with directive)
+# 5. Forward + Append Mode (extracts counterpart's latest output and annotates with directive)
 relay send <link-name> --to <target-agent> -m "Please address priority items" --append
+```
+
+### `relay template`
+Manage and preview prompt templates for relay transmissions.
+```bash
+# List all available templates (both built-in and user-customized)
+relay template list
+
+# Inspect the content and metadata of a template
+relay template show review
+relay template show followup
 ```
 
 ### `relay log`
@@ -198,6 +272,77 @@ relay log [link-name] [-n <limit>]
 # Inspect complete raw payload for a specific transmission UUID
 relay log --show <transmission-uuid>
 ```
+
+---
+
+## Prompt Templates & Customization
+
+Relay includes a built-in template engine to standardize agent-to-agent prompts, ensuring peer reviews strictly comply with code quality guardrails.
+
+### Built-in Templates
+
+| Template | Purpose | Use Case |
+|---|---|---|
+| **`review`** | Initial dual-engine code review | Drives `/verification-before-completion`: runs **Phase A** `ponytail-review` (Lean, caller blast radius, anti-bloat) and **Phase B** architectural compliance (`mopheus-code-review` or repository guardrails). |
+| **`followup`** | Follow-up review across rounds | Verifies closure of [Blocking] items from previous rounds, checks for regressions, and requests final verdict (`APPROVED`). |
+
+### Adding Custom Templates (No Code Changes Needed)
+
+You can add your own prompt templates without modifying or recompiling Relay.
+
+#### Option 1: Global Templates Directory (`~/.config/relay/templates/`)
+Drop any `.tmpl`, `.md`, or `.txt` file into `~/.config/relay/templates/`:
+
+```bash
+mkdir -p ~/.config/relay/templates
+
+# Example: create a security audit template
+cat << 'EOF' > ~/.config/relay/templates/security.tmpl
+请针对以下改动执行深度安全审查（OWASP Top 10、SQL 注入、鉴权逃逸与越权）：
+
+{{if .Message}}
+---
+【审查重点】
+{{.Message}}
+{{end}}
+EOF
+```
+
+Relay automatically discovers it immediately:
+```bash
+❯ relay template list
+NAME      SOURCE                                            DESCRIPTION
+followup  builtin                                           Follow-up review verifying closure...
+review    builtin                                           Initial dual-engine code review...
+security  ~/.config/relay/templates/security.tmpl           Custom template from ...
+```
+
+Then invoke it via `-t`:
+```bash
+relay send dev-review --to qoder -t security -m "重点检查新加的 RPC 接口参数校验"
+```
+
+> **Overriding Built-ins**: If you place a file named `review.tmpl` in `~/.config/relay/templates/`, Relay will prioritize your custom template over the built-in one.
+
+#### Option 2: Direct File Path
+You can also supply an arbitrary relative or absolute file path to `-t`:
+```bash
+relay send dev-review --to qoder -t ./prompts/pr-audit.md -m "PR #42 scope"
+```
+
+### Template Syntax & Available Variables
+
+Templates use standard Go `text/template` syntax and have access to the following variables:
+
+| Variable | Description | Example |
+|---|---|---|
+| `{{.Message}}` | Content passed via the `-m` CLI flag | `Ticket: MOC-102\nWorktree: ...` |
+| `{{.Link}}` | Name of the active link channel | `dev-review` |
+| `{{.Output}}` | Extracted counterpart output (when `--append` is used) | Markdown report text |
+| `{{.FromAgent}}` | Originating agent name | `antigravity` |
+| `{{.ToAgent}}` | Destination agent name | `qoder` |
+
+*Note: If your template is a plain text/markdown file without `{{...}}` tags, Relay will automatically and safely append your `-m` message to the end of the template.*
 
 ---
 
@@ -242,10 +387,9 @@ relay log --show <transmission-uuid>
 - [x] Antigravity & Qoder bidirectional adapters
 - [x] Windows WSL / drvfs cross-boundary SQLite & credentials support
 - [x] Autonomous Session & Link creation skill (`skills/relay/SKILL.md`)
+- [x] Built-in & custom prompt templates (`review`, `followup`)
 - [x] Audit trail with execution status and error diagnostics
-- [ ] Trust policy toggle per link (`--auto-apply` vs strict gatekeeper)
 - [ ] OpenAI Codex / Claude Code adapters
-- [ ] Terminal UI (`relay tui`) for interactive monitoring
 
 ---
 
