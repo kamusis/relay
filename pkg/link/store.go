@@ -215,7 +215,10 @@ func (s *Store) List() ([]adapter.Link, error) {
 		}
 
 		sort.Slice(result, func(i, j int) bool {
-			return result[i].UpdatedAt > result[j].UpdatedAt
+			if result[i].UpdatedAt != result[j].UpdatedAt {
+				return result[i].UpdatedAt > result[j].UpdatedAt
+			}
+			return result[i].Name < result[j].Name
 		})
 		return nil
 	})

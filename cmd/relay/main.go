@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -273,10 +274,12 @@ func newLinkCmd() *cobra.Command {
 			histStore, _ := history.NewDefaultStore()
 
 			type linkRow struct {
-				name      string
-				epA       string
-				epB       string
-				lastRelay string
+				name        string
+				epA         string
+				epB         string
+				lastRelay   string
+				lastRelayTs int64
+				createdAt   int64
 			}
 
 			maxName := runewidth.StringWidth("LINK")
@@ -288,31 +291,46 @@ func newLinkCmd() *cobra.Command {
 				sessA := l.SessionA
 				sessB := l.SessionB
 
+				drifted := false
 				// Automatically refresh & self-heal endpoint metadata
 				if adA, err := registry.Get(sessA.Agent); err == nil {
 					if fresh, err := adA.GetSession(sessA.ID); err == nil {
-						sessA.Title = fresh.Title
-						sessA.Workspace = fresh.Workspace
-						l.SessionA = sessA
-					} else if refresh {
+						if sessA.Title != fresh.Title || sessA.Workspace != fresh.Workspace {
+							sessA.Title = fresh.Title
+							sessA.Workspace = fresh.Workspace
+							l.SessionA = sessA
+							drifted = true
+						}
+					} else if refresh && sessA.Title != "[NOT FOUND]" {
 						sessA.Title = "[NOT FOUND]"
+						l.SessionA = sessA
+						drifted = true
 					}
 				}
 				if adB, err := registry.Get(sessB.Agent); err == nil {
 					if fresh, err := adB.GetSession(sessB.ID); err == nil {
-						sessB.Title = fresh.Title
-						sessB.Workspace = fresh.Workspace
-						l.SessionB = sessB
-					} else if refresh {
+						if sessB.Title != fresh.Title || sessB.Workspace != fresh.Workspace {
+							sessB.Title = fresh.Title
+							sessB.Workspace = fresh.Workspace
+							l.SessionB = sessB
+							drifted = true
+						}
+					} else if refresh && sessB.Title != "[NOT FOUND]" {
 						sessB.Title = "[NOT FOUND]"
+						l.SessionB = sessB
+						drifted = true
 					}
 				}
-				_ = store.Update(l)
+				if drifted {
+					_ = store.Update(l)
+				}
 
 				lastRelayStr := "-"
+				var lastRelayTs int64
 				if histStore != nil {
 					recent, _ := histStore.List(l.Name, 1)
 					if len(recent) > 0 {
+						lastRelayTs = recent[0].Timestamp
 						lastRelayStr = formatRelativeTime(recent[0].Timestamp)
 					}
 				}
@@ -333,12 +351,30 @@ func newLinkCmd() *cobra.Command {
 				}
 
 				rows = append(rows, linkRow{
-					name:      l.Name,
-					epA:       epADisplay,
-					epB:       epBDisplay,
-					lastRelay: lastRelayStr,
+					name:        l.Name,
+					epA:         epADisplay,
+					epB:         epBDisplay,
+					lastRelay:   lastRelayStr,
+					lastRelayTs: lastRelayTs,
+					createdAt:   l.CreatedAt,
 				})
 			}
+
+			// Sort rows by LAST RELAY descending (newest activity first, fallback to CreatedAt)
+			sort.Slice(rows, func(i, j int) bool {
+				tI := rows[i].lastRelayTs
+				if tI == 0 {
+					tI = rows[i].createdAt
+				}
+				tJ := rows[j].lastRelayTs
+				if tJ == 0 {
+					tJ = rows[j].createdAt
+				}
+				if tI != tJ {
+					return tI > tJ
+				}
+				return rows[i].name < rows[j].name
+			})
 
 			// Print visually aligned header
 			fmt.Printf("%s  %s  %s  %s\n",
