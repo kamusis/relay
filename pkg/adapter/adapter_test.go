@@ -20,6 +20,10 @@ func TestParseAgentType(t *testing.T) {
 		{"codex", AgentCodex, false},
 		{"claude", AgentClaude, false},
 		{"claudecode", AgentClaude, false},
+		{"pi", AgentPi, false},
+		{"pi-agent", AgentPi, false},
+		{"pi-coding-agent", AgentPi, false},
+		{"PI", AgentPi, false},
 		{"unknown-agent", AgentType("unknown-agent"), true},
 	}
 
@@ -85,6 +89,41 @@ func TestResolveEndpoints(t *testing.T) {
 	src.Title = "Mutated Title"
 	if link.SessionA.Title == "Mutated Title" || link.SessionB.Title == "Mutated Title" {
 		t.Errorf("expected ResolveEndpoints to return isolated copies, but original link was mutated")
+	}
+}
+
+func TestResolveSource(t *testing.T) {
+	link := Link{
+		Name: "pi-qoder",
+		SessionA: Session{
+			ID:    "01a212b0-ccd1-714a-bba7-599bb4b4b497",
+			Agent: AgentPi,
+		},
+		SessionB: Session{
+			ID:    "3c58333e-7024-49d8-a9c4-b2a89629f705",
+			Agent: AgentQoder,
+		},
+	}
+
+	src, tgt, err := link.ResolveSource("qoder")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if src.Agent != AgentQoder || tgt.Agent != AgentPi {
+		t.Errorf("expected src=qoder, tgt=pi, got src=%s, tgt=%s", src.Agent, tgt.Agent)
+	}
+
+	src, tgt, err = link.ResolveSource("01a212b0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if src.ID != link.SessionA.ID || tgt.ID != link.SessionB.ID {
+		t.Errorf("expected src=SessionA, tgt=SessionB, got src=%s, tgt=%s", src.ID, tgt.ID)
+	}
+
+	_, _, err = link.ResolveSource("claude")
+	if err == nil || !strings.Contains(err.Error(), "source 'claude'") {
+		t.Errorf("expected source mismatch error, got %v", err)
 	}
 }
 

@@ -146,6 +146,7 @@ const (
 	AgentQoder       AgentType = "qoder"
 	AgentCodex       AgentType = "codex"
 	AgentClaude      AgentType = "claude"
+	AgentPi          AgentType = "pi"
 )
 
 // Session represents an active or historical agent conversation context.
@@ -292,7 +293,24 @@ Since multiple agent sessions, git hooks, or background tasks can run `relay` CL
     4. PATH (`qoder`, excluding GUI launcher `~/.qoder/entry/qoder`)
     5. Built-in worker runtime fallback in `~/.qoder/remote/protocol-v1/installs/*/*/bin/qoder-worker-runtime`
 
-### 3.3 Relayed Message Injection Format
+### 3.3 Pi Coding Agent Adapter (`pkg/adapter/pi`)
+- **Runtime Environment & Storage**:
+  - Sessions are stored as v3 tree-structured JSONL files under `~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<session-id>.jsonl` (overridable via `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`).
+  - Line 1 (`{"type":"session","version":3,"id":"...","cwd":"..."}`) provides authoritative session ID and workspace path without external database lookups.
+- **Title Discovery**:
+  - Prefers the latest `session_info` entry's `name` field (populated by `/name` or `pi-acp` auto-title), falling back to the first line of the first `user` message (truncated to 60 display columns), or `"Untitled Session"`.
+- **Tree-Aware Turn Extraction & Busy Guard**:
+  - Reconstructs the active branch by walking `parentId` pointers backward from the latest entry ID (ignoring abandoned `/tree` branches).
+  - Skips trailing non-conversational metadata entries (`session_info`, `model_change`, `thinking_level_change`, `usage`, `label`, `custom`, `system` messages).
+  - Returns `ErrTurnInProgress` if the latest conversational node is `user`, `toolResult`, or `bashExecution`, or if the latest `assistant` message has `stopReason` in `{"toolUse", "pending", "deferred"}`.
+  - Returns `ErrNoOutputFound` (never silently falling back to stale earlier turns) if the latest assistant turn ended with `stopReason` `"error"` or `"aborted"`.
+  - Concatenates `type == "text"` content blocks from the completed assistant turn while filtering `thinking` and `toolCall` blocks.
+- **Message Delivery & Zed (`pi-acp`) Concurrency Constraint**:
+  - `Deliver` runs headless print mode: `pi -p --session <session-file> -- <formatted_content>` with `cmd.Dir = cwd`.
+  - Binary discovery precedence: `PI_CLI_PATH` → `~/.local/bin/pi` → `~/.pi/agent/bin/pi` → `PATH` (`pi`).
+  - **Zed `pi-acp` Caveat**: When a Pi session is open inside Zed via `pi-acp`, `pi-acp` keeps a long-lived `pi --mode rpc` subprocess with an in-memory `leafId` and does not watch external JSONL writes. For active Zed sessions acting as orchestrators, use `relay pull <link> --from <counterpart>` instead of `relay send --to pi` to consume counterpart outputs synchronously on stdout without tree divergence.
+
+### 3.4 Relayed Message Injection Format
 To give the recipient agent clear provenance and actionable instructions, `Adapter.Deliver` formats the payload into a standard envelope before passing it to the target agent's CLI:
 
 ```markdown
@@ -411,7 +429,15 @@ Error: Source agent 'qoder' (session: 3c58333e) is currently busy generating out
 Hint: Please wait for the turn to complete before relaying.
 ```
 
-#### 6. Transmission Audit Log (`relay log`)
+#### 6. Pull Counterpart Output (`relay pull`)
+Synchronously extracts the latest completed assistant output from the specified source endpoint to `stdout`, printing concise provenance to `stderr` and recording an audited transmission (`UserPrompt: "[pull]"`) in `history.jsonl`:
+```bash
+relay pull <link_name> --from <source_agent_or_id>
+```
+- Enforces the same pre-flight existence check, opportunistic metadata self-healing, and `ErrTurnInProgress` busy guard as `relay send`.
+- Purpose-built for active editor sessions without an external injection socket (such as Pi running via `pi-acp` in Zed) so the orchestrator consumes peer review results directly via tool stdout.
+
+#### 7. Transmission Audit Log (`relay log`)
 Inspects historical cross-agent relay events:
 ```bash
 relay log [link_name]

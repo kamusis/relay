@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/kamusis/relay/pkg/adapter"
 	"github.com/kamusis/relay/pkg/adapter/antigravity"
+	"github.com/kamusis/relay/pkg/adapter/pi"
 	"github.com/kamusis/relay/pkg/adapter/qoder"
 	"github.com/kamusis/relay/pkg/history"
 	"github.com/kamusis/relay/pkg/link"
@@ -26,6 +28,7 @@ func init() {
 	// Register default agent adapters
 	registry.Register(antigravity.New())
 	registry.Register(qoder.New())
+	registry.Register(pi.New())
 }
 
 func main() {
@@ -33,7 +36,7 @@ func main() {
 		Use:   "relay",
 		Short: "Relay is a universal, cross-agent communication CLI for AI coding assistants",
 		Long: `A universal, zero-dependency, stateless cross-agent communication CLI tool
-that allows disparate AI coding agents (Antigravity, Qoder, Codex, Claude)
+that allows disparate AI coding agents (Antigravity, Qoder, Pi, Codex, Claude)
 to directly pass messages, reviews, and tasks to each other in the background.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -42,6 +45,7 @@ to directly pass messages, reviews, and tasks to each other in the background.`,
 	rootCmd.AddCommand(newSessionCmd())
 	rootCmd.AddCommand(newLinkCmd())
 	rootCmd.AddCommand(newSendCmd())
+	rootCmd.AddCommand(newPullCmd())
 	rootCmd.AddCommand(newLogCmd())
 	rootCmd.AddCommand(newTemplateCmd())
 
@@ -167,7 +171,7 @@ func newSessionCmd() *cobra.Command {
 		},
 	}
 
-	listCmd.Flags().StringVar(&agentFilter, "agent", "", "Filter by agent type (agy, qoder, etc.)")
+	listCmd.Flags().StringVar(&agentFilter, "agent", "", "Filter by agent type (agy, qoder, pi, etc.)")
 	listCmd.Flags().StringVarP(&workspace, "workspace", "w", "", "Filter sessions by workspace directory")
 	listCmd.Flags().BoolVar(&allWS, "all", false, "List sessions across all workspaces globally")
 	listCmd.Flags().BoolVar(&noWS, "no-workspace", false, "List only sessions with no associated workspace (global/scratch)")
@@ -192,27 +196,24 @@ func newLinkCmd() *cobra.Command {
 	var (
 		agyFlag   string
 		qoderFlag string
+		piFlag    string
 	)
 
 	createCmd := &cobra.Command{
 		Use:   "create <link_name> <agent1>:<session_id> <agent2>:<session_id>",
 		Short: "Create an explicit communication link between two agent sessions",
 		Example: `  relay link create moc-qoder agy:85fccbeb qoder:3c58333e
+  relay link create review-mopheus pi:01a212b0 qoder:3c58333e
   relay link create pair agy:d4ddbec2 agy:85fccbeb
-  relay link create moc-qoder --agy 85fccbeb --qoder 3c58333e`,
+  relay link create moc-qoder --agy 85fccbeb --qoder 3c58333e
+  relay link create review-mopheus --pi 01a212b0 --qoder 3c58333e`,
 		Args: cobra.RangeArgs(1, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			linkName := args[0]
 
-			var ep1Str, ep2Str string
-			if len(args) == 3 {
-				ep1Str = args[1]
-				ep2Str = args[2]
-			} else if agyFlag != "" && qoderFlag != "" {
-				ep1Str = "agy:" + agyFlag
-				ep2Str = "qoder:" + qoderFlag
-			} else {
-				return fmt.Errorf("must specify two endpoints, e.g.: relay link create %s agy:<id> qoder:<id>", linkName)
+			ep1Str, ep2Str, err := resolveLinkCreateEndpoints(linkName, args, agyFlag, qoderFlag, piFlag)
+			if err != nil {
+				return err
 			}
 
 			// Parse endpoints
@@ -250,6 +251,7 @@ func newLinkCmd() *cobra.Command {
 	}
 	createCmd.Flags().StringVar(&agyFlag, "agy", "", "Antigravity session ID shorthand")
 	createCmd.Flags().StringVar(&qoderFlag, "qoder", "", "Qoder session ID shorthand")
+	createCmd.Flags().StringVar(&piFlag, "pi", "", "Pi Coding Agent session ID shorthand")
 
 	// 2.2 relay link list
 	var refresh bool
@@ -425,6 +427,33 @@ func newLinkCmd() *cobra.Command {
 	return linkCmd
 }
 
+// resolveLinkCreateEndpoints resolves the two endpoint specs from positional arguments
+// or any two shorthand flags (--agy, --qoder, --pi).
+func resolveLinkCreateEndpoints(linkName string, args []string, agyFlag, qoderFlag, piFlag string) (string, string, error) {
+	if len(args) == 3 {
+		return args[1], args[2], nil
+	}
+
+	var eps []string
+	if v := strings.TrimSpace(agyFlag); v != "" {
+		eps = append(eps, "agy:"+v)
+	}
+	if v := strings.TrimSpace(qoderFlag); v != "" {
+		eps = append(eps, "qoder:"+v)
+	}
+	if v := strings.TrimSpace(piFlag); v != "" {
+		eps = append(eps, "pi:"+v)
+	}
+
+	if len(eps) > 2 {
+		return "", "", fmt.Errorf("too many endpoint flags specified for link '%s': provide exactly two endpoints", linkName)
+	}
+	if len(eps) == 2 && len(args) == 1 {
+		return eps[0], eps[1], nil
+	}
+	return "", "", fmt.Errorf("must specify two endpoints, e.g.: relay link create %s agy:<id> qoder:<id> or --pi <id> --qoder <id>", linkName)
+}
+
 func parseAndResolveEndpoint(ep string) (*adapter.Session, error) {
 	parts := strings.SplitN(ep, ":", 2)
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
@@ -450,6 +479,59 @@ func parseAndResolveEndpoint(ep string) (*adapter.Session, error) {
 		return nil, fmt.Errorf("agent %s session '%s' not found: %w", agType, sessID, err)
 	}
 	return sess, nil
+}
+
+// preflightAndHealLink verifies both endpoints still exist via their adapters and
+// opportunistically updates cached Title/Workspace metadata in links.json when drifted.
+func preflightAndHealLink(
+	store *link.Store,
+	l *adapter.Link,
+	srcAdapter, tgtAdapter adapter.Adapter,
+	srcSess, tgtSess *adapter.Session,
+) (freshSrc, freshTgt *adapter.Session, err error) {
+	freshSrc, err = srcAdapter.GetSession(srcSess.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("source endpoint '%s:%s' in link '%s' was not found: %w\nHint: run 'relay link rm %s' to clean up stale link",
+			srcSess.Agent, adapter.ShortID(srcSess.ID), l.Name, err, l.Name)
+	}
+	freshTgt, err = tgtAdapter.GetSession(tgtSess.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("target endpoint '%s:%s' in link '%s' was not found: %w\nHint: run 'relay link rm %s' to clean up stale link",
+			tgtSess.Agent, adapter.ShortID(tgtSess.ID), l.Name, err, l.Name)
+	}
+
+	drifted := false
+	if freshSrc.Title != srcSess.Title || freshSrc.Workspace != srcSess.Workspace {
+		srcSess.Title = freshSrc.Title
+		srcSess.Workspace = freshSrc.Workspace
+		drifted = true
+	}
+	if freshTgt.Title != tgtSess.Title || freshTgt.Workspace != tgtSess.Workspace {
+		tgtSess.Title = freshTgt.Title
+		tgtSess.Workspace = freshTgt.Workspace
+		drifted = true
+	}
+	if drifted {
+		if l.SessionA.ID == freshSrc.ID {
+			l.SessionA.Title = freshSrc.Title
+			l.SessionA.Workspace = freshSrc.Workspace
+		} else if l.SessionA.ID == freshTgt.ID {
+			l.SessionA.Title = freshTgt.Title
+			l.SessionA.Workspace = freshTgt.Workspace
+		}
+
+		if l.SessionB.ID == freshSrc.ID {
+			l.SessionB.Title = freshSrc.Title
+			l.SessionB.Workspace = freshSrc.Workspace
+		} else if l.SessionB.ID == freshTgt.ID {
+			l.SessionB.Title = freshTgt.Title
+			l.SessionB.Workspace = freshTgt.Workspace
+		}
+
+		_ = store.Update(*l)
+	}
+
+	return freshSrc, freshTgt, nil
 }
 
 // ============================================================================
@@ -518,47 +600,9 @@ func newSendCmd() *cobra.Command {
 			}
 
 			// 3. Pre-flight & Opportunistic Cache Self-Healing
-			freshSrc, err := srcAdapter.GetSession(srcSess.ID)
+			freshSrc, freshTgt, err := preflightAndHealLink(store, l, srcAdapter, tgtAdapter, srcSess, tgtSess)
 			if err != nil {
-				return fmt.Errorf("source endpoint '%s:%s' in link '%s' was not found: %w\nHint: run 'relay link rm %s' to clean up stale link",
-					srcSess.Agent, adapter.ShortID(srcSess.ID), linkName, err, linkName)
-			}
-			freshTgt, err := tgtAdapter.GetSession(tgtSess.ID)
-			if err != nil {
-				return fmt.Errorf("target endpoint '%s:%s' in link '%s' was not found: %w\nHint: run 'relay link rm %s' to clean up stale link",
-					tgtSess.Agent, adapter.ShortID(tgtSess.ID), linkName, err, linkName)
-			}
-
-			// Check for metadata drift and update cache
-			drifted := false
-			if freshSrc.Title != srcSess.Title || freshSrc.Workspace != srcSess.Workspace {
-				srcSess.Title = freshSrc.Title
-				srcSess.Workspace = freshSrc.Workspace
-				drifted = true
-			}
-			if freshTgt.Title != tgtSess.Title || freshTgt.Workspace != tgtSess.Workspace {
-				tgtSess.Title = freshTgt.Title
-				tgtSess.Workspace = freshTgt.Workspace
-				drifted = true
-			}
-			if drifted {
-				if l.SessionA.ID == freshSrc.ID {
-					l.SessionA.Title = freshSrc.Title
-					l.SessionA.Workspace = freshSrc.Workspace
-				} else if l.SessionA.ID == freshTgt.ID {
-					l.SessionA.Title = freshTgt.Title
-					l.SessionA.Workspace = freshTgt.Workspace
-				}
-
-				if l.SessionB.ID == freshSrc.ID {
-					l.SessionB.Title = freshSrc.Title
-					l.SessionB.Workspace = freshSrc.Workspace
-				} else if l.SessionB.ID == freshTgt.ID {
-					l.SessionB.Title = freshTgt.Title
-					l.SessionB.Workspace = freshTgt.Workspace
-				}
-
-				_ = store.Update(*l)
+				return err
 			}
 
 			// 4. Determine transmission payload based on mode
@@ -684,13 +728,133 @@ func newSendCmd() *cobra.Command {
 		},
 	}
 
-	sendCmd.Flags().StringVar(&toTarget, "to", "", "Target agent (agy, qoder) or session ID in the link")
+	sendCmd.Flags().StringVar(&toTarget, "to", "", "Target agent (agy, qoder, pi) or session ID in the link")
 	sendCmd.Flags().StringVarP(&msgFlag, "message", "m", "", "Explicit message content to deliver directly")
 	sendCmd.Flags().StringVarP(&templateFlag, "template", "t", "", "Optional prompt template name or path (e.g. 'review', 'followup')")
 	sendCmd.Flags().BoolVar(&appendFlag, "append", false, "Append message to the latest output extracted from source session")
 	sendCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Bypass busy state checks on source session when extracting output")
 	_ = sendCmd.MarkFlagRequired("to")
 	return sendCmd
+}
+
+// ============================================================================
+// 4. Pull Command (`relay pull <link_name> --from <source>`)
+// ============================================================================
+
+// executePull runs pre-flight checks, extracts the latest completed output from the specified
+// source endpoint, records the audited transmission in history, and writes the body to out.
+func executePull(
+	out, errOut io.Writer,
+	reg *registry.Registry,
+	linkStore *link.Store,
+	histStore *history.Store,
+	linkName, fromSource string,
+) error {
+	if strings.TrimSpace(fromSource) == "" {
+		return fmt.Errorf("flag --from is required for link '%s'", linkName)
+	}
+
+	l, err := linkStore.Get(linkName)
+	if err != nil {
+		return err
+	}
+
+	srcSess, tgtSess, err := l.ResolveSource(fromSource)
+	if err != nil {
+		return err
+	}
+
+	srcAdapter, err := reg.Get(srcSess.Agent)
+	if err != nil {
+		return err
+	}
+	tgtAdapter, err := reg.Get(tgtSess.Agent)
+	if err != nil {
+		return err
+	}
+
+	freshSrc, freshTgt, err := preflightAndHealLink(linkStore, l, srcAdapter, tgtAdapter, srcSess, tgtSess)
+	if err != nil {
+		return err
+	}
+
+	output, err := srcAdapter.GetLatestAssistantOutput(freshSrc.ID)
+	if err != nil {
+		if errors.Is(err, adapter.ErrTurnInProgress) {
+			return fmt.Errorf("source agent '%s' (session %s) is currently busy generating output\nHint: wait for the turn to complete and retry 'relay pull %s --from %s'",
+				srcSess.Agent, adapter.ShortID(freshSrc.ID), linkName, fromSource)
+		}
+		return fmt.Errorf("failed to extract output from source session: %w", err)
+	}
+	if strings.TrimSpace(output) == "" {
+		return fmt.Errorf("extracted output from source session '%s:%s' is empty\nHint: ensure the source agent has finished generating output",
+			srcSess.Agent, adapter.ShortID(freshSrc.ID))
+	}
+
+	tx := adapter.Transmission{
+		ID:          uuid.NewString(),
+		LinkName:    linkName,
+		FromAgent:   srcSess.Agent,
+		FromSession: freshSrc.ID,
+		ToAgent:     tgtSess.Agent,
+		ToSession:   freshTgt.ID,
+		UserPrompt:  "[pull]",
+		Body:        output,
+		Timestamp:   time.Now().Unix(),
+		Status:      adapter.TransmissionDelivered,
+	}
+
+	if histStore != nil {
+		if appendErr := histStore.Append(&tx); appendErr != nil {
+			fmt.Fprintf(errOut, "Warning: failed to persist audit log: %v\n", appendErr)
+		}
+	}
+
+	fmt.Fprintln(out, strings.TrimRight(output, "\n"))
+	fmt.Fprintf(errOut, "Pulled from %s (%s) -> %s (%s) [tx: %s, %d bytes]\n",
+		srcSess.Agent, adapter.ShortID(freshSrc.ID), tgtSess.Agent, adapter.ShortID(freshTgt.ID),
+		adapter.ShortID(tx.ID), len(output))
+	return nil
+}
+
+func newPullCmd() *cobra.Command {
+	var fromSource string
+
+	pullCmd := &cobra.Command{
+		Use:   "pull <link_name> --from <source_agent_or_id>",
+		Short: "Pull the latest completed output from a linked counterpart to stdout",
+		Long: `Pulls the latest completed assistant output from the specified source endpoint
+of an established link, writes the extracted markdown cleanly to stdout, and records
+an audited transmission in history.jsonl. Designed for active editor sessions (such as
+Pi running via pi-acp in Zed) that consume counterpart verdicts synchronously without
+external session file injection.`,
+		Example: `  # Pull Qoder's latest review verdict into the current Zed Pi session:
+  relay pull review-mopheus --from qoder
+
+  # Pull Antigravity's latest output by agent shorthand:
+  relay pull dev-sync --from agy`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			linkStore, err := link.NewDefaultStore()
+			if err != nil {
+				return err
+			}
+			histStore, _ := history.NewDefaultStore()
+			return executePull(
+				cmd.OutOrStdout(),
+				cmd.ErrOrStderr(),
+				registry.Default,
+				linkStore,
+				histStore,
+				args[0],
+				fromSource,
+			)
+		},
+	}
+
+	pullCmd.Flags().StringVar(&fromSource, "from", "", "Source agent (agy, qoder, pi) or session ID to pull output from")
+	_ = pullCmd.MarkFlagRequired("from")
+	return pullCmd
 }
 
 // ============================================================================

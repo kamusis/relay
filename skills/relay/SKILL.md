@@ -1,11 +1,11 @@
 ---
 name: relay
-description: Cross-agent communication and peer-review orchestration between Google Antigravity and Qoder CLI (https://qoder.com/cli). Use whenever the user asks to relay work results, code changes, or review tasks between Antigravity and Qoder sessions (e.g., "把 agy 会话里的工作成果发给 qoder 审核", "让 qoder 审一下当前代码", "把 qoder 评审传回 agy", "建立 agy 和 qoder 的 link", "relay send"). Handles autonomous session discovery, auto-creation of missing Qoder sessions, auto-creation of missing links, and bidirectional headless delivery.
+description: Cross-agent communication and peer-review orchestration across Google Antigravity, Pi Coding Agent (pi-agent / Zed pi-acp), and Qoder CLI (https://qoder.com/cli). Use whenever the user asks to relay work results, code changes, or review tasks between Antigravity, Pi, and Qoder sessions (e.g., "把 agy 会话里的工作成果发给 qoder 审核", "让 qoder 审一下当前代码", "把 qoder 评审传回 agy", "建立 pi 和 qoder 的 link", "relay send", "relay pull"). Handles autonomous session discovery, auto-creation of missing Qoder sessions, auto-creation of missing links, headless delivery, and synchronous pull for active editor sessions.
 ---
 
 # Relay: Cross-Agent Communication & Peer Review
 
-This skill orchestrates background, cross-agent communication between Google Antigravity and Qoder using the `relay` CLI (`~/.local/bin/relay`).
+This skill orchestrates background, cross-agent communication between Google Antigravity, Pi Coding Agent (`pi` / Zed `pi-acp`), and Qoder using the `relay` CLI (`~/.local/bin/relay`).
 
 It enables disparate AI agents to conduct asynchronous peer code reviews, pass context, and exchange deliverables without requiring human copy-pasting or opening desktop GUI windows.
 
@@ -24,6 +24,7 @@ export PATH=$PATH:$HOME/.local/bin
 | **List Links** | `relay link list` |
 | **Create Link** | `relay link create <link-name> <endpoint-a> <endpoint-b>` |
 | **Relay Output** | `relay send <link-name> --to <target-agent> "<prompt>"` |
+| **Pull Output (Zed/Pi)** | `relay pull <link-name> --from <source-agent>` |
 | **View Audit Log** | `relay log <link-name> [-n <limit>]` |
 
 ---
@@ -48,11 +49,14 @@ When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"
 [Step 5: Relay Verdict Back to AGY]
 ```
 
-### Step 1: Resolve the Source Session (Antigravity)
-1. Run `relay session list -w <workspace>` to locate available Antigravity sessions in the workspace.
-2. If the user provided a session ID or title snippet (e.g. `3dfb0b87`), match it against the listed sessions.
-3. If the user referred to "当前会话" (current session), identify the active conversation UUID from the current environment context or match the latest updated session.
-4. Record `srcSessionID = <agy-session-id>`.
+### Step 1: Resolve the Source Session (Antigravity or Pi)
+1. **If running inside Pi Coding Agent (`$PI_SESSION_ID` is set)**:
+   - Use `srcEndpoint = pi:$PI_SESSION_ID` directly (zero ambiguity).
+2. **If running inside Antigravity**:
+   - Run `relay session list -w <workspace>` to locate available Antigravity sessions in the workspace.
+   - If the user provided a session ID or title snippet (e.g. `3dfb0b87`), match it against the listed sessions.
+   - If the user referred to "当前会话" (current session), identify the active conversation UUID from the current environment context or match the latest updated session.
+   - Record `srcEndpoint = agy:<agy-session-id>`.
 
 ### Step 2: Resolve or Auto-Create the Target Session (Qoder)
 1. Query existing Qoder sessions for the target workspace:
@@ -112,9 +116,10 @@ When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"
    - `relay send` will wait for Qoder to complete and print delivery details (Transmission ID, From, To, Relayed Body bytes).
    - If delivery succeeds, the audit log status updates to `delivered`.
 
-### Step 5: Relay the Verdict back to Antigravity
+### Step 5: Retrieve the Verdict back to the Orchestrator
 Once Qoder finishes generating its review:
-1. Relay Qoder's completed output back into Antigravity (using pure forwarding or forward+append):
+1. **When orchestrating from Antigravity**:
+   Relay Qoder's completed output back into Antigravity (using pure forwarding or forward+append):
    ```bash
    # Pure forwarding of Qoder's latest review:
    relay send <link-name> --to agy
@@ -122,7 +127,13 @@ Once Qoder finishes generating its review:
    # Or forwarding annotated with directive:
    relay send <link-name> --to agy -m "查收 Qoder 评审结论与整改意见" --append
    ```
-2. The latest assistant turn from Qoder is immediately delivered into the source Antigravity session with audited Transmission UUID.
+2. **When orchestrating from Pi in Zed (`pi-acp`)**:
+   Use **`relay pull`** instead of `relay send --to pi` so the verdict enters the live Zed session directly through stdout without concurrent JSONL writes against `pi-acp`'s in-memory session tree:
+   ```bash
+   relay pull <link-name> --from qoder
+   ```
+   - `relay pull` enforces the exact same pre-flight checks, busy guard, metadata self-healing, and `history.jsonl` audit logging as `relay send`.
+   - `relay send <link-name> --to pi` should only be used when targeting a background headless Pi session that is **not** currently open in Zed.
 3. Check status:
    ```bash
    relay log <link-name> -n 2
@@ -137,10 +148,15 @@ If Qoder requested changes or found blocking bugs in Round 1:
    ```bash
    relay send <link-name> --to qoder -t followup -m "已针对上一轮评审意见完成整改：1. ...; 2. ...。验证已全部通过，请核验阻断项闭环并给出终审裁决。"
    ```
-3. **Retrieve Round 2 Verdict back to Antigravity**:
-   ```bash
-   relay send <link-name> --to agy
-   ```
+3. **Retrieve Round 2 Verdict back to the Orchestrator**:
+   - **Antigravity**:
+     ```bash
+     relay send <link-name> --to agy
+     ```
+   - **Pi in Zed (`pi-acp`)**:
+     ```bash
+     relay pull <link-name> --from qoder
+     ```
 4. Confirm final approval (`Verdict: APPROVED`) before completing the development turn or preparing PR.
 
 ---
@@ -150,11 +166,11 @@ If Qoder requested changes or found blocking bugs in Round 1:
 - **ABSOLUTE RED LINE: Never Bypass Relay by Reading Private Session Files**:
   - **NEVER** use `tail ~/.qoder/projects/*.jsonl | jq`, `cat`, or direct SQLite queries to "peek" or "extract" counterpart outputs behind Relay's back.
   - Doing so breaks the audit chain (`relay log`), bypasses state machine synchronization, and risks reading partial in-progress turns.
-  - All communication between Antigravity and Qoder must strictly flow through `relay send`.
+  - All communication across agents must strictly flow through `relay send` / `relay pull`.
 - **Handling Busy State (`source agent 'qoder' is currently busy generating output`)**:
   - Multi-tool deep reviews typically take 30–60 seconds.
-  - If `relay send <link> --to agy` reports that Qoder is still busy, **DO NOT resort to raw file hacks**.
-  - Wait 5–10 seconds and re-run: `relay send <link-name> --to agy`.
+  - If `relay send <link> --to agy` or `relay pull <link> --from qoder` reports that Qoder is still busy, **DO NOT resort to raw file hacks**.
+  - Wait 5–10 seconds and re-run the same command (`relay send <link-name> --to agy` or `relay pull <link-name> --from qoder`).
 - **Exit code 127 (`qodercli: command not found`)**:
   Ensure PATH includes `~/.local/bin`: `export PATH=$PATH:$HOME/.local/bin`.
 - **Exit code 1 (`Not logged in · Please run /login`)**:

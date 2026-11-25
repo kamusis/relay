@@ -18,6 +18,8 @@ const (
 	AgentCodex AgentType = "codex"
 	// AgentClaude represents Anthropic Claude Code.
 	AgentClaude AgentType = "claude"
+	// AgentPi represents Pi Coding Agent (pi-agent / pi-acp).
+	AgentPi AgentType = "pi"
 )
 
 const (
@@ -39,6 +41,8 @@ func ParseAgentType(s string) (AgentType, error) {
 		return AgentCodex, nil
 	case "claude", "claudecode":
 		return AgentClaude, nil
+	case "pi", "pi-agent", "pi-coding-agent":
+		return AgentPi, nil
 	default:
 		return AgentType(norm), fmt.Errorf("unknown agent type: %s", s)
 	}
@@ -56,17 +60,17 @@ type Session struct {
 
 // Link represents an explicit named communication channel between two agent sessions.
 type Link struct {
-	Name      string  `json:"name"`       // Unique link name, e.g. "moc-qoder", "hotfix"
-	SessionA  Session `json:"session_a"`  // Endpoint A
-	SessionB  Session `json:"session_b"`  // Endpoint B
+	Name      string  `json:"name"`      // Unique link name, e.g. "moc-qoder", "hotfix"
+	SessionA  Session `json:"session_a"` // Endpoint A
+	SessionB  Session `json:"session_b"` // Endpoint B
 	CreatedAt int64   `json:"created_at"`
 	UpdatedAt int64   `json:"updated_at"`
 }
 
-// ResolveEndpoints determines the source and target sessions given a user-specified target identifier.
-// The target identifier can be an AgentType (e.g. "agy", "qoder") or a Session ID / prefix.
-func (l *Link) ResolveEndpoints(targetIdent string) (source, target *Session, err error) {
-	trimmed := strings.TrimSpace(targetIdent)
+// resolveEndpoint matches an identifier (agent type or session ID prefix) against SessionA/SessionB
+// and returns isolated copies of the matched session and its counterpart.
+func (l *Link) resolveEndpoint(ident, role string) (matched, other *Session, err error) {
+	trimmed := strings.TrimSpace(ident)
 	targetAgent, parseErr := ParseAgentType(trimmed)
 
 	var matchA, matchB bool
@@ -90,21 +94,37 @@ func (l *Link) ResolveEndpoints(targetIdent string) (source, target *Session, er
 	}
 
 	if matchA && matchB {
-		return nil, nil, fmt.Errorf("target '%s' is ambiguous in link '%s': both endpoints match (use full session ID to disambiguate)", targetIdent, l.Name)
+		return nil, nil, fmt.Errorf("%s '%s' is ambiguous in link '%s': both endpoints match (use full session ID to disambiguate)", role, ident, l.Name)
 	}
 	if !matchA && !matchB {
-		return nil, nil, fmt.Errorf("target '%s' does not match any endpoint in link '%s' (%s:%s, %s:%s)",
-			targetIdent, l.Name, l.SessionA.Agent, ShortID(l.SessionA.ID), l.SessionB.Agent, ShortID(l.SessionB.ID))
+		return nil, nil, fmt.Errorf("%s '%s' does not match any endpoint in link '%s' (%s:%s, %s:%s)",
+			role, ident, l.Name, l.SessionA.Agent, ShortID(l.SessionA.ID), l.SessionB.Agent, ShortID(l.SessionB.ID))
 	}
 
 	if matchA {
-		sessB := l.SessionB
 		sessA := l.SessionA
-		return &sessB, &sessA, nil
+		sessB := l.SessionB
+		return &sessA, &sessB, nil
 	}
-	sessA := l.SessionA
 	sessB := l.SessionB
-	return &sessA, &sessB, nil
+	sessA := l.SessionA
+	return &sessB, &sessA, nil
+}
+
+// ResolveEndpoints determines the source and target sessions given a user-specified target identifier.
+// The target identifier can be an AgentType (e.g. "agy", "qoder", "pi") or a Session ID / prefix.
+func (l *Link) ResolveEndpoints(targetIdent string) (source, target *Session, err error) {
+	tgt, src, err := l.resolveEndpoint(targetIdent, "target")
+	if err != nil {
+		return nil, nil, err
+	}
+	return src, tgt, nil
+}
+
+// ResolveSource determines the source and target sessions given a user-specified source identifier.
+// The source identifier can be an AgentType (e.g. "qoder", "agy", "pi") or a Session ID / prefix.
+func (l *Link) ResolveSource(sourceIdent string) (source, target *Session, err error) {
+	return l.resolveEndpoint(sourceIdent, "source")
 }
 
 // TransmissionStatus represents the delivery outcome of a transmission.

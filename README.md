@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/Architecture-CGO--Free%20%7C%20Stateless-brightgreen)](#core-design-principles)
 
-`relay` enables disparate AI coding agents (such as **Google Antigravity** and **Qoder CLI / Headless Worker**) to directly communicate, conduct automated code reviews, exchange context, and collaborate in the background—eliminating the need for human copy-pasting between chat windows.
+`relay` enables disparate AI coding agents (such as **Google Antigravity**, **Pi Coding Agent (`pi` / Zed `pi-acp`)**, and **Qoder CLI / Headless Worker**) to directly communicate, conduct automated code reviews, exchange context, and collaborate in the background—eliminating the need for human copy-pasting between chat windows.
 
 ---
 
@@ -52,11 +52,13 @@ graph TD
     subgraph Adapters ["Pluggable Agent Adapters"]
         AGY["Antigravity Adapter<br/>(Language Server agentapi + SQLite)"]
         Qoder["Qoder Adapter<br/>(POSIX JSONL + qodercli Headless Runtime)"]
+        Pi["Pi Adapter<br/>(Tree JSONL + pi CLI / Zed pi-acp)"]
         Future["Future: Claude Code / Codex..."]
     end
 
     Registry --> AGY
     Registry --> Qoder
+    Registry --> Pi
     Registry --> Future
     Dispatcher --> Hist["Audit Logger (~/.config/relay/history.jsonl)"]
 ```
@@ -210,7 +212,7 @@ relay session list
 # Filter by workspace directory
 relay session list -w /path/to/repo
 
-# Filter by specific agent (agy, qoder)
+# Filter by specific agent (agy, qoder, pi)
 relay session list --agent qoder
 
 # List global / scratch sessions without a workspace
@@ -250,6 +252,13 @@ relay send <link-name> --to <target-agent>
 
 # 5. Forward + Append Mode (extracts counterpart's latest output and annotates with directive)
 relay send <link-name> --to <target-agent> -m "Please address priority items" --append
+```
+
+### `relay pull`
+Pull the latest completed assistant output from a linked counterpart cleanly to `stdout` (with audit logging in `history.jsonl` and provenance on `stderr`). Ideal when orchestrating from an active editor session such as Pi in Zed (`pi-acp`).
+```bash
+# Pull Qoder's latest review verdict into the current Zed Pi session
+relay pull <link-name> --from qoder
 ```
 
 ### `relay template`
@@ -358,6 +367,11 @@ Templates use standard Go `text/template` syntax and have access to the followin
 - **Headless Execution**: Runs in non-interactive mode (`-p` / `--print`) with `--dangerously-skip-permissions` to allow automated verification tools (`git`, `go test`, `grep`) to execute without interactive stalls.
 - **Zero GUI Dependency**: Executes directly against `~/.qoder/projects/` session storage. The desktop IDE does not need to be running, though desktop-created sessions and titles are automatically discovered from local SQLite databases.
 
+### Pi Coding Agent (`pi` / Zed `pi-acp`)
+- **Session Storage**: Reads Pi v3 tree-structured JSONL sessions directly from `~/.pi/agent/sessions/` (honoring `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR`), walking `parentId` chains from the active leaf so abandoned `/tree` branches are never read.
+- **Zed Orchestrator Workflow**: Inside Zed (`pi-acp`), Pi exposes `$PI_SESSION_ID` to its bash tool. Link `pi:$PI_SESSION_ID` to `qoder:<id>`, dispatch reviews via `relay send --to qoder -t review`, and consume verdicts synchronously via `relay pull <link> --from qoder` (avoiding external writes to `pi-acp`'s in-memory session tree).
+- **Headless Worker Delivery**: For background Pi sessions not open in Zed, `relay send --to pi` invokes `pi -p --session <session-file> -- <payload>`.
+
 ---
 
 ## Configuration & Environment Variables
@@ -367,6 +381,9 @@ Templates use standard Go `text/template` syntax and have access to the followin
 | `RELAY_DELIVERY_TIMEOUT` | Maximum execution timeout for target agent turns (e.g. `300s`, `10m`) | `300s` |
 | `QODER_CLI_PATH` | Explicit path to `qodercli` binary | Auto-detected |
 | `QODER_DB_PATH` | Explicit path to Qoder desktop `main.sqlite` database | Auto-detected |
+| `PI_CLI_PATH` | Explicit path to `pi` CLI binary | Auto-detected |
+| `PI_CODING_AGENT_DIR` | Override Pi agent configuration root directory | `~/.pi/agent` |
+| `PI_CODING_AGENT_SESSION_DIR` | Override Pi session storage directory | `~/.pi/agent/sessions` |
 | `ANTIGRAVITY_LS_ADDRESS` | Override Antigravity Language Server address (e.g. `127.0.0.1:44987`) | Auto-discovered |
 | `ANTIGRAVITY_CSRF_TOKEN` | Override Antigravity Language Server CSRF token | Auto-discovered |
 
@@ -384,7 +401,8 @@ Templates use standard Go `text/template` syntax and have access to the followin
 
 ## Roadmap
 
-- [x] Antigravity & Qoder bidirectional adapters
+- [x] Antigravity, Qoder & Pi Coding Agent (`pi` / Zed `pi-acp`) adapters
+- [x] Synchronous `relay pull` for active editor orchestrator sessions
 - [x] Windows WSL / drvfs cross-boundary SQLite & credentials support
 - [x] Autonomous Session & Link creation skill (`skills/relay/SKILL.md`)
 - [x] Built-in & custom prompt templates (`review`, `followup`)
