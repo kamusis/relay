@@ -24,6 +24,9 @@ func TestParseAgentType(t *testing.T) {
 		{"pi-agent", AgentPi, false},
 		{"pi-coding-agent", AgentPi, false},
 		{"PI", AgentPi, false},
+		{"zed", AgentZed, false},
+		{"zed-agent", AgentZed, false},
+		{"ZED", AgentZed, false},
 		{"unknown-agent", AgentType("unknown-agent"), true},
 	}
 

@@ -18,6 +18,7 @@ import (
 	"github.com/kamusis/relay/pkg/adapter/antigravity"
 	"github.com/kamusis/relay/pkg/adapter/pi"
 	"github.com/kamusis/relay/pkg/adapter/qoder"
+	"github.com/kamusis/relay/pkg/adapter/zed"
 	"github.com/kamusis/relay/pkg/history"
 	"github.com/kamusis/relay/pkg/link"
 	"github.com/kamusis/relay/pkg/prompt"
@@ -29,6 +30,7 @@ func init() {
 	registry.Register(antigravity.New())
 	registry.Register(qoder.New())
 	registry.Register(pi.New())
+	registry.Register(zed.New())
 }
 
 func main() {
@@ -36,7 +38,7 @@ func main() {
 		Use:   "relay",
 		Short: "Relay is a universal, cross-agent communication CLI for AI coding assistants",
 		Long: `A universal, zero-dependency, stateless cross-agent communication CLI tool
-that allows disparate AI coding agents (Antigravity, Qoder, Pi, Codex, Claude)
+that allows disparate AI coding agents (Antigravity, Zed, Qoder, Pi, Codex, Claude)
 to directly pass messages, reviews, and tasks to each other in the background.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -171,7 +173,7 @@ func newSessionCmd() *cobra.Command {
 		},
 	}
 
-	listCmd.Flags().StringVar(&agentFilter, "agent", "", "Filter by agent type (agy, qoder, pi, etc.)")
+	listCmd.Flags().StringVar(&agentFilter, "agent", "", "Filter by agent type (agy, zed, qoder, pi, etc.)")
 	listCmd.Flags().StringVarP(&workspace, "workspace", "w", "", "Filter sessions by workspace directory")
 	listCmd.Flags().BoolVar(&allWS, "all", false, "List sessions across all workspaces globally")
 	listCmd.Flags().BoolVar(&noWS, "no-workspace", false, "List only sessions with no associated workspace (global/scratch)")
@@ -197,21 +199,23 @@ func newLinkCmd() *cobra.Command {
 		agyFlag   string
 		qoderFlag string
 		piFlag    string
+		zedFlag   string
 	)
 
 	createCmd := &cobra.Command{
 		Use:   "create <link_name> <agent1>:<session_id> <agent2>:<session_id>",
 		Short: "Create an explicit communication link between two agent sessions",
 		Example: `  relay link create moc-qoder agy:85fccbeb qoder:3c58333e
+  relay link create review-mopheus zed:8878e5d3 qoder:3c58333e
   relay link create review-mopheus pi:01a212b0 qoder:3c58333e
   relay link create pair agy:d4ddbec2 agy:85fccbeb
   relay link create moc-qoder --agy 85fccbeb --qoder 3c58333e
-  relay link create review-mopheus --pi 01a212b0 --qoder 3c58333e`,
+  relay link create review-mopheus --zed 8878e5d3 --qoder 3c58333e`,
 		Args: cobra.RangeArgs(1, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			linkName := args[0]
 
-			ep1Str, ep2Str, err := resolveLinkCreateEndpoints(linkName, args, agyFlag, qoderFlag, piFlag)
+			ep1Str, ep2Str, err := resolveLinkCreateEndpoints(linkName, args, agyFlag, qoderFlag, piFlag, zedFlag)
 			if err != nil {
 				return err
 			}
@@ -252,6 +256,7 @@ func newLinkCmd() *cobra.Command {
 	createCmd.Flags().StringVar(&agyFlag, "agy", "", "Antigravity session ID shorthand")
 	createCmd.Flags().StringVar(&qoderFlag, "qoder", "", "Qoder session ID shorthand")
 	createCmd.Flags().StringVar(&piFlag, "pi", "", "Pi Coding Agent session ID shorthand")
+	createCmd.Flags().StringVar(&zedFlag, "zed", "", "Zed native Agent thread ID shorthand")
 
 	// 2.2 relay link list
 	var refresh bool
@@ -428,8 +433,8 @@ func newLinkCmd() *cobra.Command {
 }
 
 // resolveLinkCreateEndpoints resolves the two endpoint specs from positional arguments
-// or any two shorthand flags (--agy, --qoder, --pi).
-func resolveLinkCreateEndpoints(linkName string, args []string, agyFlag, qoderFlag, piFlag string) (string, string, error) {
+// or any two shorthand flags (--agy, --qoder, --pi, --zed).
+func resolveLinkCreateEndpoints(linkName string, args []string, agyFlag, qoderFlag, piFlag, zedFlag string) (string, string, error) {
 	if len(args) == 3 {
 		return args[1], args[2], nil
 	}
@@ -444,6 +449,9 @@ func resolveLinkCreateEndpoints(linkName string, args []string, agyFlag, qoderFl
 	if v := strings.TrimSpace(piFlag); v != "" {
 		eps = append(eps, "pi:"+v)
 	}
+	if v := strings.TrimSpace(zedFlag); v != "" {
+		eps = append(eps, "zed:"+v)
+	}
 
 	if len(eps) > 2 {
 		return "", "", fmt.Errorf("too many endpoint flags specified for link '%s': provide exactly two endpoints", linkName)
@@ -451,7 +459,7 @@ func resolveLinkCreateEndpoints(linkName string, args []string, agyFlag, qoderFl
 	if len(eps) == 2 && len(args) == 1 {
 		return eps[0], eps[1], nil
 	}
-	return "", "", fmt.Errorf("must specify two endpoints, e.g.: relay link create %s agy:<id> qoder:<id> or --pi <id> --qoder <id>", linkName)
+	return "", "", fmt.Errorf("must specify two endpoints, e.g.: relay link create %s agy:<id> qoder:<id> or --zed <id> --qoder <id>", linkName)
 }
 
 func parseAndResolveEndpoint(ep string) (*adapter.Session, error) {
@@ -728,7 +736,7 @@ func newSendCmd() *cobra.Command {
 		},
 	}
 
-	sendCmd.Flags().StringVar(&toTarget, "to", "", "Target agent (agy, qoder, pi) or session ID in the link")
+	sendCmd.Flags().StringVar(&toTarget, "to", "", "Target agent (agy, qoder, pi, zed) or session ID in the link")
 	sendCmd.Flags().StringVarP(&msgFlag, "message", "m", "", "Explicit message content to deliver directly")
 	sendCmd.Flags().StringVarP(&templateFlag, "template", "t", "", "Optional prompt template name or path (e.g. 'review', 'followup')")
 	sendCmd.Flags().BoolVar(&appendFlag, "append", false, "Append message to the latest output extracted from source session")
@@ -826,9 +834,9 @@ func newPullCmd() *cobra.Command {
 		Long: `Pulls the latest completed assistant output from the specified source endpoint
 of an established link, writes the extracted markdown cleanly to stdout, and records
 an audited transmission in history.jsonl. Designed for active editor sessions (such as
-Pi running via pi-acp in Zed) that consume counterpart verdicts synchronously without
-external session file injection.`,
-		Example: `  # Pull Qoder's latest review verdict into the current Zed Pi session:
+Zed native Agent or Pi via pi-acp in Zed) that consume counterpart verdicts synchronously
+without external session file injection.`,
+		Example: `  # Pull Qoder's latest review verdict into the current Zed or Pi session:
   relay pull review-mopheus --from qoder
 
   # Pull Antigravity's latest output by agent shorthand:
@@ -852,7 +860,7 @@ external session file injection.`,
 		},
 	}
 
-	pullCmd.Flags().StringVar(&fromSource, "from", "", "Source agent (agy, qoder, pi) or session ID to pull output from")
+	pullCmd.Flags().StringVar(&fromSource, "from", "", "Source agent (agy, qoder, pi, zed) or session ID to pull output from")
 	_ = pullCmd.MarkFlagRequired("from")
 	return pullCmd
 }

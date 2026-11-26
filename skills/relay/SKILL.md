@@ -1,11 +1,11 @@
 ---
 name: relay
-description: Cross-agent communication and peer-review orchestration across Google Antigravity, Pi Coding Agent (pi-agent / Zed pi-acp), and Qoder CLI (https://qoder.com/cli). Use whenever the user asks to relay work results, code changes, or review tasks between Antigravity, Pi, and Qoder sessions (e.g., "把 agy 会话里的工作成果发给 qoder 审核", "让 qoder 审一下当前代码", "把 qoder 评审传回 agy", "建立 pi 和 qoder 的 link", "relay send", "relay pull"). Handles autonomous session discovery, auto-creation of missing Qoder sessions, auto-creation of missing links, headless delivery, and synchronous pull for active editor sessions.
+description: Cross-agent communication and peer-review orchestration across Google Antigravity, Zed native Agent (`zed`), Pi Coding Agent (`pi` / Zed `pi-acp`), and Qoder CLI (https://qoder.com/cli). Use whenever the user asks to relay work results, code changes, or review tasks between Antigravity, Zed, Pi, and Qoder sessions (e.g., "把 agy 会话里的工作成果发给 qoder 审核", "让 qoder 审一下当前代码", "把 qoder 评审传回 agy", "建立 zed 和 qoder 的 link", "建立 pi 和 qoder 的 link", "relay send", "relay pull"). Handles autonomous session discovery, auto-creation of missing Qoder sessions, auto-creation of missing links, headless delivery, and synchronous pull for active editor sessions.
 ---
 
 # Relay: Cross-Agent Communication & Peer Review
 
-This skill orchestrates background, cross-agent communication between Google Antigravity, Pi Coding Agent (`pi` / Zed `pi-acp`), and Qoder using the `relay` CLI (`~/.local/bin/relay`).
+This skill orchestrates background, cross-agent communication between Google Antigravity, Zed native Agent (`zed`), Pi Coding Agent (`pi` / Zed `pi-acp`), and Qoder using the `relay` CLI (`~/.local/bin/relay`).
 
 It enables disparate AI agents to conduct asynchronous peer code reviews, pass context, and exchange deliverables without requiring human copy-pasting or opening desktop GUI windows.
 
@@ -49,10 +49,15 @@ When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"
 [Step 5: Relay Verdict Back to AGY]
 ```
 
-### Step 1: Resolve the Source Session (Antigravity or Pi)
+### Step 1: Resolve the Source Session (Antigravity, Zed, or Pi)
 1. **If running inside Pi Coding Agent (`$PI_SESSION_ID` is set)**:
    - Use `srcEndpoint = pi:$PI_SESSION_ID` directly (zero ambiguity).
-2. **If running inside Antigravity**:
+2. **If running inside Zed native Agent Panel**:
+   - Run `relay session list --agent zed -w <workspace>` to locate Zed threads for the workspace (reads `threads.db` read-only).
+   - If the user provided a thread ID or title snippet (e.g. `8878e5d3`), match it directly.
+   - Otherwise, match the newest updated thread (`UPDATED` top row) for the current workspace. *(Note: unlike Pi, Zed native Agent does not expose a session ID env var; if multiple Zed threads are active in the same workspace, disambiguate by thread summary or ask the user for the short ID.)*
+   - Record `srcEndpoint = zed:<zed-thread-id>`.
+3. **If running inside Antigravity**:
    - Run `relay session list -w <workspace>` to locate available Antigravity sessions in the workspace.
    - If the user provided a session ID or title snippet (e.g. `3dfb0b87`), match it against the listed sessions.
    - If the user referred to "当前会话" (current session), identify the active conversation UUID from the current environment context or match the latest updated session.
@@ -127,13 +132,13 @@ Once Qoder finishes generating its review:
    # Or forwarding annotated with directive:
    relay send <link-name> --to agy -m "查收 Qoder 评审结论与整改意见" --append
    ```
-2. **When orchestrating from Pi in Zed (`pi-acp`)**:
-   Use **`relay pull`** instead of `relay send --to pi` so the verdict enters the live Zed session directly through stdout without concurrent JSONL writes against `pi-acp`'s in-memory session tree:
+2. **When orchestrating from Zed native Agent (`zed`) or Pi in Zed (`pi-acp`)**:
+   Use **`relay pull`** instead of `relay send --to zed` / `relay send --to pi` so the verdict enters the live Zed session directly through stdout without mutating Zed's open `threads.db` or racing against `pi-acp`'s in-memory session tree:
    ```bash
    relay pull <link-name> --from qoder
    ```
    - `relay pull` enforces the exact same pre-flight checks, busy guard, metadata self-healing, and `history.jsonl` audit logging as `relay send`.
-   - `relay send <link-name> --to pi` should only be used when targeting a background headless Pi session that is **not** currently open in Zed.
+   - `relay send <link-name> --to zed` is intentionally disabled (returns a hint pointing to `relay pull`); `relay send <link-name> --to pi` should only be used when targeting a background headless Pi session that is **not** currently open in Zed.
 3. Check status:
    ```bash
    relay log <link-name> -n 2
@@ -153,7 +158,7 @@ If Qoder requested changes or found blocking bugs in Round 1:
      ```bash
      relay send <link-name> --to agy
      ```
-   - **Pi in Zed (`pi-acp`)**:
+   - **Zed native Agent (`zed`) or Pi in Zed (`pi-acp`)**:
      ```bash
      relay pull <link-name> --from qoder
      ```
@@ -182,5 +187,7 @@ If Qoder requested changes or found blocking bugs in Round 1:
   ```
 - **Permission Prompt Blocking**:
   `pkg/adapter/qoder` automatically passes `--dangerously-skip-permissions` so non-interactive tools (`go test`, `git diff`) run without stalling.
+- **Direct Push to Zed (`zed native agent sessions do not support direct push delivery`)**:
+  Zed native threads are read-only in Relay to prevent corrupting live `threads.db` state. Always retrieve counterpart responses via `relay pull <link-name> --from <source-agent>`.
 - **Desktop GUI Closed**:
   Qoder Desktop App is completely optional. All operations run directly against `~/.qoder/projects/` and the headless CLI engine.

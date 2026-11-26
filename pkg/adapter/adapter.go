@@ -20,6 +20,8 @@ const (
 	AgentClaude AgentType = "claude"
 	// AgentPi represents Pi Coding Agent (pi-agent / pi-acp).
 	AgentPi AgentType = "pi"
+	// AgentZed represents Zed's native AI Agent Panel.
+	AgentZed AgentType = "zed"
 )
 
 const (
@@ -43,6 +45,8 @@ func ParseAgentType(s string) (AgentType, error) {
 		return AgentClaude, nil
 	case "pi", "pi-agent", "pi-coding-agent":
 		return AgentPi, nil
+	case "zed", "zed-agent":
+		return AgentZed, nil
 	default:
 		return AgentType(norm), fmt.Errorf("unknown agent type: %s", s)
 	}

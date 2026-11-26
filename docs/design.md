@@ -147,6 +147,7 @@ const (
 	AgentCodex       AgentType = "codex"
 	AgentClaude      AgentType = "claude"
 	AgentPi          AgentType = "pi"
+	AgentZed         AgentType = "zed"
 )
 
 // Session represents an active or historical agent conversation context.
@@ -310,7 +311,23 @@ Since multiple agent sessions, git hooks, or background tasks can run `relay` CL
   - Binary discovery precedence: `PI_CLI_PATH` → `~/.local/bin/pi` → `~/.pi/agent/bin/pi` → `PATH` (`pi`).
   - **Zed `pi-acp` Caveat**: When a Pi session is open inside Zed via `pi-acp`, `pi-acp` keeps a long-lived `pi --mode rpc` subprocess with an in-memory `leafId` and does not watch external JSONL writes. For active Zed sessions acting as orchestrators, use `relay pull <link> --from <counterpart>` instead of `relay send --to pi` to consume counterpart outputs synchronously on stdout without tree divergence.
 
-### 3.4 Relayed Message Injection Format
+### 3.4 Zed Native Agent Adapter (`pkg/adapter/zed`)
+- **Runtime Environment & Storage**:
+  - Reads Zed's local SQLite `threads.db` (`~/Library/Application Support/Zed/threads/threads.db` on macOS, `$XDG_DATA_HOME/zed/threads/threads.db` / `~/.local/share/zed/threads/threads.db` on Linux, `%LOCALAPPDATA%/Zed/threads/threads.db` on Windows/WSL; overridable via `ZED_THREADS_DB_PATH`).
+  - Uses direct read-only SQLite URI handles (`mode=ro&_pragma=busy_timeout(1000)`) on local filesystems for transactional consistency against rollback-journal databases, falling back to temporary snapshot copies on WSL `drvfs` or lock errors.
+  - Decompresses `data_type == "zstd"` thread blobs in pure Go via `github.com/klauspost/compress/zstd` (with plain `"json"` fallback).
+- **Session Discovery & Metadata**:
+  - Lists top-level threads (`parent_id IS NULL`) ordered by `updated_at DESC`.
+  - Resolves workspace paths from `folder_paths` (multi-path newline-separated) and falls back to `initial_project_snapshot.worktree_snapshots[*].worktree_path` for legacy threads where `folder_paths` is `NULL`.
+  - Prefers `summary` for display titles, falling back to payload `title` or `"Untitled Session"`.
+- **Turn Extraction & Busy Guard**:
+  - Walks `messages` backward, ignoring non-object markers such as `"Resume"`.
+  - Returns `ErrTurnInProgress` if the latest conversational message is `User`, if any `ToolUse` has `is_input_complete == false` or is missing from `tool_results`, or if the trailing `Agent` message contains any `ToolUse` block (even alongside preamble `Text`, since final answers arrive in a subsequent `Agent` message without `ToolUse`).
+  - Concatenates `Text` blocks while skipping `Thinking` entries.
+- **Read-Only Delivery Policy**:
+  - `Deliver` refuses to mutate live `threads.db` and returns an actionable error pointing callers to `relay pull <link> --from <source>`.
+
+### 3.5 Relayed Message Injection Format
 To give the recipient agent clear provenance and actionable instructions, `Adapter.Deliver` formats the payload into a standard envelope before passing it to the target agent's CLI:
 
 ```markdown
@@ -324,7 +341,7 @@ User Directive: <user_prompt>
 
 If `UserPrompt` is omitted, the `User Directive:` block is skipped.
 
-### 3.4 Closed-Source App Reverse Engineering Methodology (`/reverse-engineer-anything`)
+### 3.6 Closed-Source App Reverse Engineering Methodology (`/reverse-engineer-anything`)
 Antigravity, Qoder, and other future targets are closed-source proprietary applications. When maintaining or extending adapters, developers must follow the `/reverse-engineer-anything` skill:
 1. **JavaScript Inspection**: Decompile ASAR/CJS bundles in `~/.qoder/remote/...` or Antigravity binaries to inspect IPC method signatures.
 2. **Database Verification**: Probe local SQLite databases using quiescent readonly handles without speculative writes.
