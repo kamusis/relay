@@ -162,3 +162,67 @@ func TestQoderTrailingMetadataParsing(t *testing.T) {
 		t.Errorf("expected 'Verdict: APPROVED', got '%s'", output)
 	}
 }
+
+func TestQoderListSessions_SymlinkWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	realWS := filepath.Join(tmp, "real", "project")
+	if err := os.MkdirAll(realWS, 0o755); err != nil {
+		t.Fatalf("mkdir realWS: %v", err)
+	}
+	// Canonicalize realWS itself in case t.TempDir() resides under a symlinked root (e.g. macOS /var -> /private/var).
+	canonicalWS, err := filepath.EvalSymlinks(realWS)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(realWS): %v", err)
+	}
+	symWS := filepath.Join(tmp, "link-project")
+	if err := os.Symlink(canonicalWS, symWS); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	base := filepath.Join(tmp, "qoder")
+	projDir := filepath.Join(base, "projects", PathToSlug(canonicalWS))
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatalf("mkdir projDir: %v", err)
+	}
+	jsonlPath := filepath.Join(projDir, "11112222-3333-4444-5555-666677778888.jsonl")
+	content := `{"type":"workspace-directories","directories":["` + canonicalWS + `"]}
+{"type":"last-prompt","lastPrompt":"Symlink Workspace Session"}
+`
+	if err := os.WriteFile(jsonlPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write jsonl: %v", err)
+	}
+
+	ad := New(Config{BaseDir: base, DBPath: ":none:"})
+
+	// Filtering by symlink path must discover sessions stored under the canonical path slug.
+	sessions, err := ad.ListSessions(symWS, 10)
+	if err != nil {
+		t.Fatalf("ListSessions(symWS) error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "11112222-3333-4444-5555-666677778888" {
+		t.Fatalf("expected 1 session via symlink path %q -> %q, got %+v", symWS, canonicalWS, sessions)
+	}
+
+	// Filtering by a non-existent child under a symlinked parent must also resolve the parent symlink.
+	missingChildReal := filepath.Join(canonicalWS, "deleted-sub")
+	missingChildSym := filepath.Join(symWS, "deleted-sub")
+	projDir2 := filepath.Join(base, "projects", PathToSlug(missingChildReal))
+	if err := os.MkdirAll(projDir2, 0o755); err != nil {
+		t.Fatalf("mkdir projDir2: %v", err)
+	}
+	jsonlPath2 := filepath.Join(projDir2, "22223333-4444-5555-6666-777788889999.jsonl")
+	content2 := `{"type":"workspace-directories","directories":["` + missingChildReal + `"]}
+{"type":"last-prompt","lastPrompt":"Deleted Subdir Session"}
+`
+	if err := os.WriteFile(jsonlPath2, []byte(content2), 0o600); err != nil {
+		t.Fatalf("write jsonl2: %v", err)
+	}
+
+	sessions2, err := ad.ListSessions(missingChildSym, 10)
+	if err != nil {
+		t.Fatalf("ListSessions(missingChildSym) error: %v", err)
+	}
+	if len(sessions2) != 1 || sessions2[0].ID != "22223333-4444-5555-6666-777788889999" {
+		t.Fatalf("expected 1 session for deleted child under symlink parent, got %+v", sessions2)
+	}
+}

@@ -287,3 +287,32 @@ func TestPiAdapter_DeliverInvokesHeadlessCLI(t *testing.T) {
 		t.Errorf("unexpected formatted payload:\n%s", rest)
 	}
 }
+
+func TestPiAdapter_ListSessions_SymlinkWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	realWS := filepath.Join(tmp, "real", "repo")
+	if err := os.MkdirAll(realWS, 0o755); err != nil {
+		t.Fatalf("mkdir realWS: %v", err)
+	}
+	canonicalWS, err := filepath.EvalSymlinks(realWS)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	symWS := filepath.Join(tmp, "sym-repo")
+	if err := os.Symlink(canonicalWS, symWS); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	agentDir := filepath.Join(tmp, "pi-agent")
+	content := `{"type":"session","version":3,"id":"pi-sym-1111","cwd":"` + canonicalWS + `"}` + "\n"
+	writeSessionFile(t, filepath.Join(agentDir, "sessions", "--real--"), "s.jsonl", content, time.Now())
+
+	ad := New(Config{AgentDir: agentDir})
+	sessions, err := ad.ListSessions(symWS, 10)
+	if err != nil {
+		t.Fatalf("ListSessions(symWS) error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "pi-sym-1111" {
+		t.Fatalf("expected 1 pi session via symlink %q -> %q, got %+v", symWS, canonicalWS, sessions)
+	}
+}

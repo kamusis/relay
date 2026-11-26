@@ -384,7 +384,10 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 	defer rows.Close()
 
 	var sessions []adapter.Session
-	workspaceClean := filepath.Clean(workspace)
+	var wsMatcher adapter.WorkspaceMatcher
+	if workspace != adapter.WorkspaceAll && workspace != adapter.WorkspaceNone {
+		wsMatcher = adapter.NewWorkspaceMatcher(workspace)
+	}
 
 	for rows.Next() {
 		var (
@@ -403,12 +406,7 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 				continue
 			}
 		} else if workspace != "" {
-			if ws == "" {
-				continue
-			}
-			isExact := strings.EqualFold(ws, workspaceClean)
-			isSubdir := strings.HasPrefix(ws, workspaceClean+string(filepath.Separator))
-			if !isExact && !isSubdir {
+			if !wsMatcher.Matches(ws) {
 				continue
 			}
 		}

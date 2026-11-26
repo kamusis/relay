@@ -374,3 +374,66 @@ func TestDeliver_GuidesToRelayPull(t *testing.T) {
 		t.Errorf("expected actionable relay pull guidance, got: %v", err)
 	}
 }
+
+func TestListSessions_SymlinkWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	realWS := filepath.Join(tmp, "real", "repo")
+	realSub := filepath.Join(realWS, ".worktrees", "wt-1")
+	if err := os.MkdirAll(realSub, 0o755); err != nil {
+		t.Fatalf("mkdir realSub: %v", err)
+	}
+	canonicalWS, err := filepath.EvalSymlinks(realWS)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(realWS): %v", err)
+	}
+	canonicalSub := filepath.Join(canonicalWS, ".worktrees", "wt-1")
+
+	symWS := filepath.Join(tmp, "sym-repo")
+	if err := os.Symlink(canonicalWS, symWS); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	dbPath := createTestThreadsDB(t, []testThreadSpec{
+		{
+			ID:          "sym-thread-real-root",
+			Summary:     "Canonical root thread",
+			UpdatedAt:   "2026-11-26T16:30:00Z",
+			FolderPaths: strPtr(canonicalWS),
+			PayloadJSON: `{"version":"0.3.0","messages":[]}`,
+		},
+		{
+			ID:          "sym-thread-real-sub",
+			Summary:     "Canonical subdir thread",
+			UpdatedAt:   "2026-11-26T16:20:00Z",
+			FolderPaths: strPtr(canonicalSub),
+			PayloadJSON: `{"version":"0.3.0","messages":[]}`,
+		},
+		{
+			ID:          "sym-thread-link-path",
+			Summary:     "Symlink stored thread",
+			UpdatedAt:   "2026-11-26T16:10:00Z",
+			FolderPaths: strPtr(symWS),
+			PayloadJSON: `{"version":"0.3.0","messages":[]}`,
+		},
+	})
+
+	ad := New(Config{DBPath: dbPath})
+
+	// Filtering by symlink matches canonical root, canonical subdir, and symlink-stored sessions.
+	viaSym, err := ad.ListSessions(symWS, 10)
+	if err != nil {
+		t.Fatalf("ListSessions(symWS) error: %v", err)
+	}
+	if len(viaSym) != 3 {
+		t.Fatalf("expected 3 sessions via symlink filter %q, got %d: %+v", symWS, len(viaSym), viaSym)
+	}
+
+	// Filtering by canonical path also matches symlink-stored session.
+	viaReal, err := ad.ListSessions(canonicalWS, 10)
+	if err != nil {
+		t.Fatalf("ListSessions(canonicalWS) error: %v", err)
+	}
+	if len(viaReal) != 3 {
+		t.Fatalf("expected 3 sessions via canonical filter %q, got %d: %+v", canonicalWS, len(viaReal), viaReal)
+	}
+}

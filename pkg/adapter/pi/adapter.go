@@ -596,9 +596,10 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		return entries[i].id < entries[j].id
 	})
 
-	wsClean := ""
-	if workspace != adapter.WorkspaceAll && workspace != adapter.WorkspaceNone {
-		wsClean = filepath.Clean(workspace)
+	var wsMatcher adapter.WorkspaceMatcher
+	filterByWS := workspace != adapter.WorkspaceAll && workspace != adapter.WorkspaceNone
+	if filterByWS {
+		wsMatcher = adapter.NewWorkspaceMatcher(workspace)
 	}
 
 	var sessions []adapter.Session
@@ -607,17 +608,8 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 			if entry.cwd != "" {
 				continue
 			}
-		} else if wsClean != "" {
-			if entry.cwd == "" {
-				continue
-			}
-			prefix := wsClean
-			if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-				prefix += string(filepath.Separator)
-			}
-			isExact := strings.EqualFold(entry.cwd, wsClean)
-			isSubdir := strings.HasPrefix(entry.cwd, prefix)
-			if !isExact && !isSubdir {
+		} else if filterByWS {
+			if !wsMatcher.Matches(entry.cwd) {
 				continue
 			}
 		}

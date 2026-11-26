@@ -144,3 +144,53 @@ func TestAntigravityAdapter(t *testing.T) {
 		t.Fatalf("expected ErrAmbiguousSession for ambiguous prefix, got %v", err)
 	}
 }
+
+func TestAntigravityAdapter_ListSessions_SymlinkWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	realWS := filepath.Join(tmp, "real", "repo")
+	if err := os.MkdirAll(realWS, 0o755); err != nil {
+		t.Fatalf("mkdir realWS: %v", err)
+	}
+	canonicalWS, err := filepath.EvalSymlinks(realWS)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	symWS := filepath.Join(tmp, "sym-repo")
+	if err := os.Symlink(canonicalWS, symWS); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	base := filepath.Join(tmp, "agy")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(base, "conversation_summaries.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE conversation_summaries (
+			conversation_id TEXT PRIMARY KEY,
+			title TEXT,
+			workspace_uris TEXT,
+			last_modified_time DATETIME,
+			not_fully_idle NUMERIC DEFAULT 0,
+			killed NUMERIC DEFAULT 0
+		);
+		INSERT INTO conversation_summaries VALUES
+		('agy-sym-1111', 'Symlink Session', '["file://` + canonicalWS + `"]', '2026-11-26 10:00:00', 0, 0);
+	`)
+	db.Close()
+	if err != nil {
+		t.Fatalf("seed db: %v", err)
+	}
+
+	ad := New(Config{BaseDir: base})
+	sessions, err := ad.ListSessions(symWS, 10)
+	if err != nil {
+		t.Fatalf("ListSessions(symWS) error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "agy-sym-1111" {
+		t.Fatalf("expected 1 antigravity session via symlink %q -> %q, got %+v", symWS, canonicalWS, sessions)
+	}
+}

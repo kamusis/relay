@@ -534,9 +534,13 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		limit = 30
 	}
 
-	targetSlug := ""
+	var targetSlugs map[string]struct{}
 	if workspace != "" && workspace != adapter.WorkspaceNone {
-		targetSlug = PathToSlug(workspace)
+		variants := adapter.WorkspacePathVariants(workspace)
+		targetSlugs = make(map[string]struct{}, len(variants))
+		for _, v := range variants {
+			targetSlugs[PathToSlug(v)] = struct{}{}
+		}
 	}
 
 	var allFiles []string
@@ -544,8 +548,10 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		if !entry.IsDir() {
 			continue
 		}
-		if targetSlug != "" && entry.Name() != targetSlug {
-			continue
+		if len(targetSlugs) > 0 {
+			if _, ok := targetSlugs[entry.Name()]; !ok {
+				continue
+			}
 		}
 
 		pDir := filepath.Join(projDir, entry.Name())

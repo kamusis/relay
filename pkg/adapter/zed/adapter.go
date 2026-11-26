@@ -158,7 +158,7 @@ func resolveRowMetadata(row *threadRow) (title string, workspaces []string) {
 
 // matchWorkspace checks whether a thread's workspaces satisfy the requested workspace filter
 // and returns the representative workspace path to display.
-func matchWorkspace(workspaces []string, filter string) (string, bool) {
+func matchWorkspace(workspaces []string, filter string, wsMatcher adapter.WorkspaceMatcher) (string, bool) {
 	primary := ""
 	if len(workspaces) > 0 {
 		primary = workspaces[0]
@@ -174,14 +174,8 @@ func matchWorkspace(workspaces []string, filter string) (string, bool) {
 		return "", false
 	}
 
-	wsClean := filepath.Clean(filter)
-	prefix := wsClean
-	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-		prefix += string(filepath.Separator)
-	}
-
 	for _, ws := range workspaces {
-		if strings.EqualFold(ws, wsClean) || strings.HasPrefix(ws, prefix) {
+		if wsMatcher.Matches(ws) {
 			return ws, true
 		}
 	}
@@ -431,6 +425,11 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 		limit = 30
 	}
 
+	var wsMatcher adapter.WorkspaceMatcher
+	if workspace != adapter.WorkspaceAll && workspace != adapter.WorkspaceNone {
+		wsMatcher = adapter.NewWorkspaceMatcher(workspace)
+	}
+
 	var sessions []adapter.Session
 	err := a.withReadOnlyDB(func(db *sql.DB) error {
 		// Exclude subagent child threads (parent_id IS NOT NULL) from top-level listings.
@@ -454,7 +453,7 @@ func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, 
 			}
 
 			title, workspaces := resolveRowMetadata(row)
-			ws, ok := matchWorkspace(workspaces, workspace)
+			ws, ok := matchWorkspace(workspaces, workspace, wsMatcher)
 			if !ok {
 				continue
 			}
