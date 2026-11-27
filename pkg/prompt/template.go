@@ -97,6 +97,27 @@ func (m *Manager) registerBuiltins() {
 {{.Message}}
 {{end}}`),
 	}
+
+	m.builtins["supervise"] = TemplateInfo{
+		Name:        "supervise",
+		Source:      "builtin",
+		Description: "Live progress supervision prompt for inspecting in-flight work via relay peek and steering only on high-confidence defects",
+		Content: strings.TrimSpace(`
+你正在以监督者视角巡检正在执行任务的 Worker Agent，请遵循高信噪比原则：
+
+1. 使用 ` + "`relay peek <worktree_or_session> --diff`" + ` 读取实时 worktree 分支、commit、改动文件与增量 diff；
+2. **严禁因代码风格、命名偏好或未写完的半成品打断 Worker**；
+3. 仅在发现明确高置信度硬伤时调用 ` + "`relay steer <target> -m \"...\"`" + `（严重缺陷加 ` + "`--blocking`" + `）：
+   - 架构/安全边界违反（如遗漏多租户 ` + "`workspace_id`" + `、跨层越权、命令注入、相对 PATH 调系统工具）；
+   - 明显逻辑错误、死锁/竞态、错误吞没或破坏既有契约；
+   - 偏离工单验收标准或范围蔓延。
+4. 每条 steer 指令必须简短可执行（指明 ` + "`file:line`" + `、问题与期望改法），未发现硬伤则保持静默。
+{{if .Message}}
+---
+【巡检目标与关注点】
+{{.Message}}
+{{end}}`),
+	}
 }
 
 // List returns all available templates sorted by name.

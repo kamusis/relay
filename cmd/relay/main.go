@@ -48,6 +48,8 @@ to directly pass messages, reviews, and tasks to each other in the background.`,
 	rootCmd.AddCommand(newLinkCmd())
 	rootCmd.AddCommand(newSendCmd())
 	rootCmd.AddCommand(newPullCmd())
+	rootCmd.AddCommand(newPeekCmd())
+	rootCmd.AddCommand(newSteerCmd())
 	rootCmd.AddCommand(newLogCmd())
 	rootCmd.AddCommand(newTemplateCmd())
 

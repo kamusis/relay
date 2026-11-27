@@ -25,6 +25,9 @@ export PATH=$PATH:$HOME/.local/bin
 | **Create Link** | `relay link create <link-name> <endpoint-a> <endpoint-b>` |
 | **Relay Output** | `relay send <link-name> --to <target-agent> "<prompt>"` |
 | **Pull Output (Zed/Pi)** | `relay pull <link-name> --from <source-agent>` |
+| **Peek Live Progress** | `relay peek <worktree\|agent:id\|link> [--diff] [-f <file>] [--json]` |
+| **Steer (Hook Agents)** | `relay steer <worktree\|agent:id> -m "<correction>" [--blocking]` |
+| **Steer Queue & Hook** | `relay steer list [--all]` / `relay steer drain --format hook-json --read-hook-stdin` / `relay steer hook-snippet --agent claude\|qoder\|pi` |
 | **View Audit Log** | `relay log <link-name> [-n <limit>]` |
 
 ---
@@ -166,7 +169,39 @@ If Qoder requested changes or found blocking bugs in Round 1:
 
 ---
 
-## 3. Failure Triage & Guardrails
+## 3. Live Progress Inspection & Mid-Turn Steering (`peek` + `steer`)
+
+For observing a worker agent while it is still executing (without waiting for its turn to finish) and injecting high-signal corrections into hook-capable agents (Claude Code, Qoder CLI, Pi):
+
+1. **Inspect Live Progress (`relay peek`)**:
+   ```bash
+   # Inspect a worktree directly (branch, commits, dirty files, sibling worktrees, active sessions, pending steers)
+   relay peek .worktrees/fix-moc-1385 --diff -f server/internal/util/platform_darwin.go
+
+   # Inspect by agent session or link name (works even while the agent turn is in progress)
+   relay peek zed:8878e5d3
+   relay peek qoder:e09937bb --diff --json
+   relay peek review-mopheus
+   ```
+2. **Inject Mid-Turn Correction (`relay steer`) — Hook-Capable Agents**:
+   - Queue a correction ONLY for high-confidence defects (hard bugs, broken security/path invariants, scope drift) — never interrupt workers for style nitpicks:
+   ```bash
+   # Target a feature worktree (automatically matches any hook running inside that worktree or its subdirectories)
+   relay steer .worktrees/fix-moc-1385 -m "Use /usr/sbin/ioreg instead of bare ioreg" --blocking
+
+   # Or target a specific hook-capable session
+   relay steer qoder:e09937bb -m "Add empty-PATH test assertion"
+   ```
+   - Inspect or cancel queued directives: `relay steer list [--all]` / `relay steer clear [target] [--id <prefix>]`.
+3. **Configure `PostToolUse` Hook on Worker Agent**:
+   - Print ready-to-paste hook config: `relay steer hook-snippet --agent claude` (or `qoder` / `pi`), or point the hook command to `scripts/relay-steer-hook.sh`.
+   - The hook runs `relay steer drain --format hook-json --read-hook-stdin`: when no steer is queued it exits `0` silently; when pending steers match the worker's `session_id` or `cwd`, it atomically marks them `consumed` and emits `PostToolUse` JSON (`additionalContext`, plus `decision: "block"` when `--blocking` is set).
+4. **Supervisor Prompt Template**:
+   - Built-in template `supervise` (`relay template show supervise`) encodes the high-signal supervision checklist.
+
+---
+
+## 4. Failure Triage & Guardrails
 
 - **ABSOLUTE RED LINE: Never Bypass Relay by Reading Private Session Files**:
   - **NEVER** use `tail ~/.qoder/projects/*.jsonl | jq`, `cat`, or direct SQLite queries to "peek" or "extract" counterpart outputs behind Relay's back.

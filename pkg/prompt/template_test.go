@@ -58,6 +58,23 @@ func TestBuiltinFollowup(t *testing.T) {
 	}
 }
 
+func TestBuiltinSupervise(t *testing.T) {
+	mgr := NewDefaultManager()
+
+	out, err := mgr.Render("supervise", TemplateData{
+		Message: "重点检查 platform_darwin.go 是否使用绝对路径",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "relay peek") || !strings.Contains(out, "relay steer") {
+		t.Errorf("expected relay peek and steer guidance in supervise template, got: %s", out)
+	}
+	if !strings.Contains(out, "platform_darwin.go") {
+		t.Errorf("expected message content in supervise template, got: %s", out)
+	}
+}
+
 func TestCustomTemplate(t *testing.T) {
 	tmpDir := t.TempDir()
 	customTmpl := "Custom review for {{.Link}}: {{.Message}}"
