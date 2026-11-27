@@ -263,6 +263,36 @@ Pull the latest completed assistant output from a linked counterpart cleanly to 
 relay pull <link-name> --from qoder
 ```
 
+### `relay peek`
+Capture a read-only live progress snapshot for a worktree directory, an agent session (`<agent>:<session_id>`), or a link name — even while the worker's turn is still in progress. Combines Git branch/commits/dirty files/diff, sibling worktrees, live session status (`working`/`idle`), and pending steers.
+```bash
+# Inspect a feature worktree with file-filtered unified diff
+relay peek .worktrees/fix-auth --diff -f server/auth.go
+
+# Inspect a live agent session or link (supports --json for supervision loops)
+relay peek zed:8878e5d3
+relay peek qoder:e09937bb --diff --json
+relay peek review-mopheus
+```
+
+### `relay steer`
+Queue and drain mid-turn steering directives for hook-capable agents (Claude Code, Qoder CLI, Pi) via a cross-process locked queue (`~/.config/relay/steer.jsonl`).
+```bash
+# Queue a mid-turn correction targeting a worktree (matches subdirectories) or session
+relay steer .worktrees/fix-auth -m "Use /usr/sbin/ioreg instead of bare ioreg" --blocking
+relay steer qoder:e09937bb -m "Add empty-PATH test assertion"
+
+# Inspect or cancel pending directives
+relay steer list [--all] [--json]
+relay steer clear [target] [--id <prefix>]
+
+# Atomically consume pending directives inside a PostToolUse hook
+relay steer drain --format hook-json --read-hook-stdin
+
+# Print ready-to-paste PostToolUse hook configuration
+relay steer hook-snippet --agent claude   # or qoder / pi
+```
+
 ### `relay template`
 Manage and preview prompt templates for relay transmissions.
 ```bash
@@ -272,6 +302,7 @@ relay template list
 # Inspect the content and metadata of a template
 relay template show review
 relay template show followup
+relay template show supervise
 ```
 
 ### `relay log`
@@ -296,6 +327,7 @@ Relay includes a built-in template engine to standardize agent-to-agent prompts,
 |---|---|---|
 | **`review`** | Initial dual-engine code review | Drives `/verification-before-completion`: runs **Phase A** `ponytail-review` (Lean, caller blast radius, anti-bloat) and **Phase B** architectural compliance (`mopheus-code-review` or repository guardrails). |
 | **`followup`** | Follow-up review across rounds | Verifies closure of [Blocking] items from previous rounds, checks for regressions, and requests final verdict (`APPROVED`). |
+| **`supervise`** | Live mid-turn supervision | Guides a supervisor agent to inspect in-flight work via `relay peek --diff` and invoke `relay steer` only on high-confidence defects (bugs, security/path boundaries, broken invariants). |
 
 ### Adding Custom Templates (No Code Changes Needed)
 
@@ -379,6 +411,10 @@ Templates use standard Go `text/template` syntax and have access to the followin
 - **Zed Orchestrator Workflow**: Inside Zed (`pi-acp`), Pi exposes `$PI_SESSION_ID` to its bash tool. Link `pi:$PI_SESSION_ID` to `qoder:<id>`, dispatch reviews via `relay send --to qoder -t review`, and consume verdicts synchronously via `relay pull <link> --from qoder` (avoiding external writes to `pi-acp`'s in-memory session tree).
 - **Headless Worker Delivery**: For background Pi sessions not open in Zed, `relay send --to pi` invokes `pi -p --session <session-file> -- <payload>`.
 
+### PostToolUse Hook Integration (Mid-Turn Steering)
+- **Hook-Capable Agents (Claude Code, Qoder CLI, Pi)**: Configure a `PostToolUse` hook running `relay steer drain --format hook-json --read-hook-stdin` (or `scripts/relay-steer-hook.sh`). Run `relay steer hook-snippet --agent claude|qoder|pi` to print a ready-to-paste snippet.
+- **Zero-Noise Execution**: When no pending directive matches the worker's `session_id` or `cwd` (including subdirectories beneath a steered worktree), the hook exits `0` with empty output. When a match exists, it atomically marks the directive `consumed` under cross-process `flock` and emits `PostToolUse` JSON (`additionalContext`, plus `decision: "block"` when `--blocking` is set).
+
 ---
 
 ## Configuration & Environment Variables
@@ -386,6 +422,7 @@ Templates use standard Go `text/template` syntax and have access to the followin
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `RELAY_DELIVERY_TIMEOUT` | Maximum execution timeout for target agent turns (e.g. `300s`, `10m`) | `300s` |
+| `RELAY_STEER_TARGET` | Explicit steer target key matched during `relay steer drain` (e.g. `qoder:<id>` or `ws:<dir>`) | Auto-detected |
 | `QODER_CLI_PATH` | Explicit path to `qodercli` binary | Auto-detected |
 | `QODER_DB_PATH` | Explicit path to Qoder desktop `main.sqlite` database | Auto-detected |
 | `PI_CLI_PATH` | Explicit path to `pi` CLI binary | Auto-detected |

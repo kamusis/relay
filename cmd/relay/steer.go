@@ -53,6 +53,15 @@ func executeSteerDrain(
 	readHookStdin bool,
 	getenv func(string) string,
 ) error {
+	// Validate output format before draining so invalid flags never consume pending directives.
+	normFormat := strings.ToLower(strings.TrimSpace(format))
+	if normFormat == "" {
+		normFormat = "text"
+	}
+	if normFormat != "text" && normFormat != "hook-json" {
+		return fmt.Errorf("invalid --format '%s': expected 'text' or 'hook-json'", format)
+	}
+
 	var hookIn steer.HookInput
 	if readHookStdin {
 		parsed, err := steer.ParseHookInput(in)
@@ -75,23 +84,67 @@ func executeSteerDrain(
 		return nil
 	}
 
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "", "text":
-		_, err = fmt.Fprintln(out, steer.FormatText(msgs))
-		return err
-	case "hook-json":
+	if normFormat == "hook-json" {
 		payload, err := steer.FormatHookJSON(msgs)
 		if err != nil {
 			return err
 		}
-		if len(payload) == 0 {
-			return nil
-		}
 		_, err = fmt.Fprintln(out, string(payload))
 		return err
-	default:
-		return fmt.Errorf("invalid --format '%s': expected 'text' or 'hook-json'", format)
 	}
+	_, err = fmt.Fprintln(out, steer.FormatText(msgs))
+	return err
+}
+
+// truncateLeftVisual keeps the trailing runes of s within maxWidth terminal columns,
+// prefixing "..." when truncated without ever splitting a UTF-8 rune.
+func truncateLeftVisual(s string, maxWidth int) string {
+	if runewidth.StringWidth(s) <= maxWidth {
+		return s
+	}
+	const ellipsis = "..."
+	budget := maxWidth - len(ellipsis)
+	if budget <= 0 {
+		return ellipsis[:maxWidth]
+	}
+	runes := []rune(s)
+	width := 0
+	start := len(runes)
+	for i := len(runes) - 1; i >= 0; i-- {
+		w := runewidth.RuneWidth(runes[i])
+		if width+w > budget {
+			break
+		}
+		width += w
+		start = i
+	}
+	return ellipsis + string(runes[start:])
+}
+
+// resolveSteerTargetAndBody parses target and message body identically for `relay steer` and `relay steer add`.
+func resolveSteerTargetAndBody(wsFlag, msgFlag string, args []string) (target, body string, err error) {
+	ws := strings.TrimSpace(wsFlag)
+	if ws != "" {
+		target = steer.WorkspaceTarget(ws)
+	} else if len(args) > 0 {
+		target = args[0]
+	}
+	if strings.TrimSpace(target) == "" {
+		return "", "", fmt.Errorf("target session ('<agent>:<id>') or worktree path is required")
+	}
+
+	body = strings.TrimSpace(msgFlag)
+	if body == "" {
+		if ws == "" && len(args) > 1 {
+			body = strings.TrimSpace(strings.Join(args[1:], " "))
+		} else if ws != "" && len(args) > 0 {
+			body = strings.TrimSpace(strings.Join(args, " "))
+		}
+	}
+	if body == "" {
+		return "", "", fmt.Errorf("flag -m/--message is required")
+	}
+	return target, body, nil
 }
 
 func executeSteerList(
@@ -137,10 +190,7 @@ func executeSteerList(
 		if m.CreatedAt > 0 {
 			tStr = time.Unix(m.CreatedAt, 0).Format("15:04:05")
 		}
-		tgt := m.Target
-		if len(tgt) > 32 {
-			tgt = "..." + tgt[len(tgt)-29:]
-		}
+		tgt := truncateLeftVisual(m.Target, 32)
 		body := runewidth.Truncate(strings.ReplaceAll(m.Body, "\n", " "), 60, "...")
 		fmt.Fprintf(out, "%s  %s  %s  %s  %s  %s\n",
 			runewidth.FillRight(adapter.ShortID(m.ID), 8),
@@ -163,24 +213,9 @@ func newSteerCmd() *cobra.Command {
 	)
 
 	enqueueRunE := func(cmd *cobra.Command, args []string) error {
-		target := strings.TrimSpace(wsFlag)
-		if target != "" {
-			target = "ws:" + target
-		} else if len(args) > 0 {
-			target = args[0]
-		}
-		if target == "" {
-			return fmt.Errorf("target session ('<agent>:<id>') or worktree path is required")
-		}
-
-		body := strings.TrimSpace(msgFlag)
-		if body == "" && wsFlag == "" && len(args) > 1 {
-			body = strings.TrimSpace(strings.Join(args[1:], " "))
-		} else if body == "" && wsFlag != "" && len(args) > 0 {
-			body = strings.TrimSpace(strings.Join(args, " "))
-		}
-		if body == "" {
-			return fmt.Errorf("flag -m/--message is required")
+		target, body, err := resolveSteerTargetAndBody(wsFlag, msgFlag, args)
+		if err != nil {
+			return err
 		}
 
 		store, err := steer.NewDefaultStore()
@@ -227,15 +262,9 @@ and drains them atomically inside PostToolUse hooks. Targets may be an agent ses
 		Short: "Enqueue a mid-turn steering directive (explicit alias for 'relay steer')",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target := strings.TrimSpace(addWS)
-			if target != "" {
-				target = "ws:" + target
-			} else if len(args) > 0 {
-				target = args[0]
-			}
-			body := strings.TrimSpace(addMsg)
-			if body == "" && addWS == "" && len(args) > 1 {
-				body = strings.TrimSpace(strings.Join(args[1:], " "))
+			target, body, err := resolveSteerTargetAndBody(addWS, addMsg, args)
+			if err != nil {
+				return err
 			}
 			store, err := steer.NewDefaultStore()
 			if err != nil {

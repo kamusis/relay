@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kamusis/relay/pkg/adapter"
 	"github.com/kamusis/relay/pkg/link"
@@ -103,6 +104,9 @@ func Inspect(
 	if opts.MaxDiffBytes <= 0 {
 		opts.MaxDiffBytes = defaultMaxDiffBytes
 	}
+	if baseRef := strings.TrimSpace(opts.BaseRef); baseRef != "" && strings.HasPrefix(baseRef, "-") {
+		return nil, fmt.Errorf("invalid --base ref '%s': must not start with '-'", baseRef)
+	}
 
 	rawTarget := strings.TrimSpace(opts.Target)
 	if rawTarget == "" {
@@ -113,6 +117,12 @@ func Inspect(
 		rawTarget = cwd
 	}
 
+	// Accept symmetric "ws:<path>" target notation matching `relay steer`.
+	dirCandidate := rawTarget
+	if strings.HasPrefix(rawTarget, steer.WorkspacePrefix) {
+		dirCandidate = strings.TrimSpace(strings.TrimPrefix(rawTarget, steer.WorkspacePrefix))
+	}
+
 	report := &Report{
 		Target:    rawTarget,
 		Timestamp: time.Now().Unix(),
@@ -120,24 +130,28 @@ func Inspect(
 
 	var steerQueries []string
 
-	// 1. Existing directory/worktree path
-	if info, err := os.Stat(rawTarget); err == nil && info.IsDir() {
-		absDir, absErr := filepath.Abs(rawTarget)
+	// 1. Existing directory/worktree path (including "ws:<path>")
+	if info, err := os.Stat(dirCandidate); err == nil && info.IsDir() {
+		absDir, absErr := filepath.Abs(dirCandidate)
 		if absErr == nil {
-			rawTarget = absDir
+			dirCandidate = absDir
 		}
 		report.ResolvedKind = "worktree"
-		report.Workspace = rawTarget
-		steerQueries = append(steerQueries, "ws:"+rawTarget)
+		report.Workspace = dirCandidate
+		steerQueries = append(steerQueries, steer.WorkspaceTarget(dirCandidate))
 
-		if gitSnap := inspectGit(ctx, rawTarget, opts); gitSnap != nil {
+		gitSnap, gitErr := inspectGit(ctx, dirCandidate, opts)
+		if gitErr != nil {
+			return nil, gitErr
+		}
+		if gitSnap != nil {
 			report.Git = gitSnap
-			if gitSnap.Root != "" && gitSnap.Root != rawTarget {
-				steerQueries = append(steerQueries, "ws:"+gitSnap.Root)
+			if gitSnap.Root != "" && gitSnap.Root != dirCandidate {
+				steerQueries = append(steerQueries, steer.WorkspaceTarget(gitSnap.Root))
 			}
 		}
 		if reg != nil {
-			report.Sessions = discoverWorkspaceSessions(reg, rawTarget)
+			report.Sessions = discoverWorkspaceSessions(reg, dirCandidate)
 			for _, s := range report.Sessions {
 				steerQueries = append(steerQueries, fmt.Sprintf("%s:%s", s.Agent, s.ID))
 			}
@@ -163,9 +177,13 @@ func Inspect(
 
 		if sess.Workspace != "" {
 			report.Workspace = sess.Workspace
-			steerQueries = append(steerQueries, "ws:"+sess.Workspace)
+			steerQueries = append(steerQueries, steer.WorkspaceTarget(sess.Workspace))
 			if st, statErr := os.Stat(sess.Workspace); statErr == nil && st.IsDir() {
-				report.Git = inspectGit(ctx, sess.Workspace, opts)
+				gitSnap, gitErr := inspectGit(ctx, sess.Workspace, opts)
+				if gitErr != nil {
+					return nil, gitErr
+				}
+				report.Git = gitSnap
 			}
 		}
 	} else if linkStore != nil {
@@ -198,11 +216,15 @@ func Inspect(
 			}
 			steerQueries = append(steerQueries, fmt.Sprintf("%s:%s", ep.Agent, ep.ID))
 			if ep.Workspace != "" {
-				steerQueries = append(steerQueries, "ws:"+ep.Workspace)
+				steerQueries = append(steerQueries, steer.WorkspaceTarget(ep.Workspace))
 				if report.Workspace == "" {
 					if st, statErr := os.Stat(ep.Workspace); statErr == nil && st.IsDir() {
 						report.Workspace = ep.Workspace
-						report.Git = inspectGit(ctx, ep.Workspace, opts)
+						gitSnap, gitErr := inspectGit(ctx, ep.Workspace, opts)
+						if gitErr != nil {
+							return nil, gitErr
+						}
+						report.Git = gitSnap
 					}
 				}
 			}
@@ -216,7 +238,7 @@ func Inspect(
 	if report.Git != nil {
 		for _, wt := range report.Git.Worktrees {
 			if wt.Path != "" {
-				steerQueries = append(steerQueries, "ws:"+wt.Path)
+				steerQueries = append(steerQueries, steer.WorkspaceTarget(wt.Path))
 			}
 		}
 	}
@@ -287,10 +309,10 @@ func probeSession(ad adapter.Adapter, s adapter.Session) SessionSnapshot {
 	return snap
 }
 
-func inspectGit(ctx context.Context, dir string, opts Options) *GitSnapshot {
+func inspectGit(ctx context.Context, dir string, opts Options) (*GitSnapshot, error) {
 	root, err := runGit(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil || strings.TrimSpace(root) == "" {
-		return nil
+		return nil, nil
 	}
 	root = filepath.Clean(strings.TrimSpace(root))
 
@@ -304,7 +326,11 @@ func inspectGit(ctx context.Context, dir string, opts Options) *GitSnapshot {
 	}
 
 	baseRef := strings.TrimSpace(opts.BaseRef)
-	if baseRef == "" {
+	if baseRef != "" {
+		if _, verifyErr := runGit(ctx, root, "rev-parse", "--verify", "--quiet", "--end-of-options", baseRef); verifyErr != nil {
+			return nil, fmt.Errorf("invalid --base ref '%s': not a valid git revision", baseRef)
+		}
+	} else {
 		baseRef = detectBaseRef(ctx, root, snap.Branch)
 	}
 	snap.BaseRef = baseRef
@@ -354,7 +380,7 @@ func inspectGit(ctx context.Context, dir string, opts Options) *GitSnapshot {
 		snap.DiffStat = strings.TrimRight(statOut, "\n")
 	}
 
-	// Optional unified diff.
+	// Optional unified diff truncated on a valid UTF-8 rune boundary.
 	if opts.IncludeDiff {
 		diffArgs := []string{"diff"}
 		if diffBase != "" {
@@ -366,17 +392,24 @@ func inspectGit(ctx context.Context, dir string, opts Options) *GitSnapshot {
 		}
 		if diffOut, err := runGit(ctx, root, diffArgs...); err == nil {
 			diffOut = strings.TrimRight(diffOut, "\n")
-			if len(diffOut) > opts.MaxDiffBytes {
-				snap.Diff = diffOut[:opts.MaxDiffBytes]
-				snap.DiffTruncated = true
-			} else {
-				snap.Diff = diffOut
-			}
+			snap.Diff, snap.DiffTruncated = truncateUTF8(diffOut, opts.MaxDiffBytes)
 		}
 	}
 
 	snap.Worktrees = listWorktrees(ctx, root)
-	return snap
+	return snap, nil
+}
+
+// truncateUTF8 caps s to at most maxBytes without splitting a multi-byte UTF-8 rune.
+func truncateUTF8(s string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s, false
+	}
+	n := maxBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n], true
 }
 
 func detectBaseRef(ctx context.Context, root, currentBranch string) string {

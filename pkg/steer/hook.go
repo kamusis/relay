@@ -66,7 +66,7 @@ func ResolveDrainTargets(explicitTarget, explicitWorkspace string, hookIn HookIn
 
 	add(explicitTarget)
 	if ws := strings.TrimSpace(explicitWorkspace); ws != "" {
-		add(workspacePrefix + ws)
+		add(WorkspaceTarget(ws))
 	}
 
 	if getenv != nil {
@@ -98,10 +98,10 @@ func ResolveDrainTargets(explicitTarget, explicitWorkspace string, hookIn HookIn
 	}
 
 	if cwd := strings.TrimSpace(hookIn.Cwd); cwd != "" {
-		add(workspacePrefix + cwd)
+		add(WorkspaceTarget(cwd))
 	} else if explicitWorkspace == "" && getenv != nil {
 		if pwd := strings.TrimSpace(getenv("PWD")); pwd != "" {
-			add(workspacePrefix + pwd)
+			add(WorkspaceTarget(pwd))
 		}
 	}
 
@@ -185,43 +185,30 @@ func HookSnippet(agentName string) (string, error) {
 		norm = "claude"
 	}
 
+	jsonHook := func(settingsPath, matcher string) string {
+		return fmt.Sprintf(`// Add to %s:
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "%s",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "relay steer drain --format hook-json --read-hook-stdin"
+          }
+        ]
+      }
+    ]
+  }
+}`, settingsPath, matcher)
+	}
+
 	switch norm {
 	case "claude", "claudecode":
-		return strings.TrimSpace(`
-// Add to .claude/settings.json or ~/.claude/settings.json:
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "relay steer drain --format hook-json --read-hook-stdin"
-          }
-        ]
-      }
-    ]
-  }
-}`), nil
+		return jsonHook(".claude/settings.json or ~/.claude/settings.json", "Edit|Write|MultiEdit|Bash"), nil
 	case "qoder", "qodercli":
-		return strings.TrimSpace(`
-// Add to .qoder/settings.json or ~/.qoder/settings.json:
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "relay steer drain --format hook-json --read-hook-stdin"
-          }
-        ]
-      }
-    ]
-  }
-}`), nil
+		return jsonHook(".qoder/settings.json or ~/.qoder/settings.json", "Edit|Write|Bash"), nil
 	case "pi", "pi-agent":
 		return strings.TrimSpace(`
 # Invoke from a Pi tool/turn hook or extension after file edits / bash commands:

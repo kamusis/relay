@@ -37,7 +37,13 @@ const (
 	SeverityBlocking Severity = "blocking"
 )
 
-const workspacePrefix = "ws:"
+// WorkspacePrefix marks a canonicalized filesystem workspace target key.
+const WorkspacePrefix = "ws:"
+
+// WorkspaceTarget builds an explicit workspace target string from a directory path.
+func WorkspaceTarget(dir string) string {
+	return WorkspacePrefix + strings.TrimSpace(dir)
+}
 
 var (
 	// ErrEmptyBody is returned when attempting to enqueue a blank steering message.
@@ -96,12 +102,12 @@ func NormalizeTarget(raw string) (string, error) {
 		return "", ErrEmptyTarget
 	}
 
-	if strings.HasPrefix(trimmed, workspacePrefix) {
-		p := strings.TrimSpace(strings.TrimPrefix(trimmed, workspacePrefix))
+	if strings.HasPrefix(trimmed, WorkspacePrefix) {
+		p := strings.TrimSpace(strings.TrimPrefix(trimmed, WorkspacePrefix))
 		if p == "" {
 			return "", ErrEmptyTarget
 		}
-		return workspacePrefix + canonicalPath(p), nil
+		return WorkspacePrefix + canonicalPath(p), nil
 	}
 
 	// Check for "<agent>:<session_id>" form without misclassifying Windows drive letters (e.g. "C:\foo").
@@ -116,7 +122,7 @@ func NormalizeTarget(raw string) (string, error) {
 		}
 	}
 
-	return workspacePrefix + canonicalPath(trimmed), nil
+	return WorkspacePrefix + canonicalPath(trimmed), nil
 }
 
 // NormalizeWorkspaceTarget canonicalizes a filesystem directory into a "ws:<path>" target key.
@@ -125,7 +131,7 @@ func NormalizeWorkspaceTarget(dir string) (string, error) {
 	if trimmed == "" {
 		return "", ErrEmptyTarget
 	}
-	return workspacePrefix + canonicalPath(trimmed), nil
+	return WorkspacePrefix + canonicalPath(trimmed), nil
 }
 
 // canonicalPath resolves ~, converts to an absolute path, and evaluates symlinks when present.
@@ -162,9 +168,9 @@ func MatchesTarget(storedTarget, queryTarget string) bool {
 	}
 
 	// Workspace matching: stored ws:<root> matches query ws:<root>/subdir.
-	if strings.HasPrefix(storedTarget, workspacePrefix) && strings.HasPrefix(queryTarget, workspacePrefix) {
-		storedDir := filepath.Clean(strings.TrimPrefix(storedTarget, workspacePrefix))
-		queryDir := filepath.Clean(strings.TrimPrefix(queryTarget, workspacePrefix))
+	if strings.HasPrefix(storedTarget, WorkspacePrefix) && strings.HasPrefix(queryTarget, WorkspacePrefix) {
+		storedDir := filepath.Clean(strings.TrimPrefix(storedTarget, WorkspacePrefix))
+		queryDir := filepath.Clean(strings.TrimPrefix(queryTarget, WorkspacePrefix))
 		if storedDir == queryDir {
 			return true
 		}
@@ -303,12 +309,6 @@ func (s *Store) Enqueue(msg Message) (*Message, error) {
 		Body:      body,
 		Status:    StatusPending,
 		CreatedAt: time.Now().Unix(),
-	}
-	if msg.ID != "" {
-		created.ID = msg.ID
-	}
-	if msg.CreatedAt > 0 {
-		created.CreatedAt = msg.CreatedAt
 	}
 
 	err = s.withFileLock(func() error {

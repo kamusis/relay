@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kamusis/relay/pkg/adapter"
 	"github.com/kamusis/relay/pkg/adapter/qoder"
@@ -168,5 +169,70 @@ func TestInspectWorktreeAndSessionAndSteers(t *testing.T) {
 	}
 	if repLink.ResolvedKind != "link" || repLink.Git == nil {
 		t.Fatalf("unexpected link report: %+v", repLink)
+	}
+
+	// 4. Symmetric "ws:<path>" target syntax works identically to raw directory path
+	repWS, err := Inspect(context.Background(), reg, nil, steerStore, Options{
+		Target: steer.WorkspaceTarget(wt),
+	})
+	if err != nil {
+		t.Fatalf("Inspect(ws:<wt>): %v", err)
+	}
+	if repWS.ResolvedKind != "worktree" || repWS.Git == nil || repWS.Git.Branch != "feat/demo" {
+		t.Fatalf("unexpected ws: report: %+v", repWS)
+	}
+
+	// 5. Reject flag-like --base ref (e.g. --base=--output=/tmp/x)
+	if _, err := Inspect(context.Background(), reg, nil, steerStore, Options{
+		Target:  wt,
+		BaseRef: "--output=/tmp/should-not-exist",
+	}); err == nil {
+		t.Fatal("expected error for flag-like --base ref")
+	}
+}
+
+func TestTruncateUTF8AndCJKDiff(t *testing.T) {
+	// Ensure truncation at every byte offset inside multi-byte CJK runes always yields valid UTF-8.
+	sample := "diff --git a/a.go b/a.go\n+// 中文注释测试数据迁移验证与安全边界\n"
+	for limit := 1; limit < len(sample); limit++ {
+		got, truncated := truncateUTF8(sample, limit)
+		if !truncated {
+			t.Fatalf("limit=%d: expected truncated=true", limit)
+		}
+		if len(got) > limit {
+			t.Fatalf("limit=%d: len(got)=%d exceeds limit", limit, len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("limit=%d: invalid UTF-8 bytes produced: %q", limit, got)
+		}
+	}
+
+	// End-to-end git diff truncation on a real repo with CJK lines.
+	repo := t.TempDir()
+	runGitTest(t, repo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "cn.go"), []byte("package cn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, repo, "add", "cn.go")
+	runGitTest(t, repo, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(repo, "cn.go"), []byte("package cn\n// 中文注释：数据库迁移与并发安全检查\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, maxBytes := range []int{80, 95, 110, 111, 112, 113} {
+		rep, err := Inspect(context.Background(), nil, nil, nil, Options{
+			Target:       repo,
+			IncludeDiff:  true,
+			MaxDiffBytes: maxBytes,
+		})
+		if err != nil {
+			t.Fatalf("Inspect(max=%d): %v", maxBytes, err)
+		}
+		if rep.Git == nil || !rep.Git.DiffTruncated {
+			t.Fatalf("Inspect(max=%d): expected truncated diff", maxBytes)
+		}
+		if !utf8.ValidString(rep.Git.Diff) {
+			t.Fatalf("Inspect(max=%d): diff contains invalid UTF-8: %q", maxBytes, rep.Git.Diff)
+		}
 	}
 }

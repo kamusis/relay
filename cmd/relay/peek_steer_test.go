@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kamusis/relay/pkg/peek"
 	"github.com/kamusis/relay/pkg/registry"
@@ -134,5 +135,61 @@ func TestSteerEndToEndEnqueueListDrainHookJSON(t *testing.T) {
 	}
 	if secondDrain.Len() != 0 {
 		t.Fatalf("expected silent empty output on second drain, got %q", secondDrain.String())
+	}
+}
+
+func TestSteerDrainInvalidFormatDoesNotConsumeQueue(t *testing.T) {
+	tmp := t.TempDir()
+	store := steer.NewStore(filepath.Join(tmp, "steer.jsonl"))
+	worktree := filepath.Join(tmp, "wt-safe")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Invalid format must fail even on an empty queue.
+	var emptyOut bytes.Buffer
+	if err := executeSteerDrain(nil, &emptyOut, store, worktree, "", "bogus", false, func(string) string { return "" }); err == nil {
+		t.Fatal("expected error for invalid --format on empty queue")
+	}
+
+	// 2. Enqueue directive, then drain with invalid format -> must error AND leave directive pending.
+	if _, err := store.Enqueue(steer.Message{Target: worktree, Body: "must not be lost"}); err != nil {
+		t.Fatal(err)
+	}
+	var badOut bytes.Buffer
+	if err := executeSteerDrain(nil, &badOut, store, worktree, "", "bogus", false, func(string) string { return "" }); err == nil {
+		t.Fatal("expected error for invalid --format on non-empty queue")
+	}
+
+	pending, err := store.List([]string{worktree}, false)
+	if err != nil || len(pending) != 1 || pending[0].Body != "must not be lost" {
+		t.Fatalf("directive was lost after invalid --format drain: %+v, err=%v", pending, err)
+	}
+}
+
+func TestSteerListCJKTargetUTF8SafeAndResolveParity(t *testing.T) {
+	tmp := t.TempDir()
+	store := steer.NewStore(filepath.Join(tmp, "steer.jsonl"))
+	cjkDir := filepath.Join(tmp, "评审-数据库迁移验证-很长的中文工作区目录名称测试")
+	if err := os.MkdirAll(cjkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Enqueue(steer.Message{Target: cjkDir, Body: "修复路径编码"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var listOut bytes.Buffer
+	if err := executeSteerList(&listOut, store, "", false, false); err != nil {
+		t.Fatalf("executeSteerList table: %v", err)
+	}
+	if !utf8.ValidString(listOut.String()) {
+		t.Fatalf("steer list table output contains invalid UTF-8: %q", listOut.String())
+	}
+
+	// Parity between `relay steer -w dir "msg"` and `relay steer add -w dir "msg"`.
+	tgt, body, err := resolveSteerTargetAndBody(cjkDir, "", []string{"use absolute path"})
+	if err != nil || tgt != steer.WorkspaceTarget(cjkDir) || body != "use absolute path" {
+		t.Fatalf("resolveSteerTargetAndBody(-w + pos msg) = (%q, %q, %v)", tgt, body, err)
 	}
 }
