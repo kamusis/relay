@@ -41,6 +41,27 @@ Even though agents share the same codebase on disk, **their conversation session
 
 ---
 
+## Supported Agents & Capability Matrix
+
+Relay separates **who initiates a call (Caller)** from **who executes a headless turn (Receiver)**:
+
+- **Caller (`relay ask` / `relay peek` / `relay steer`)**: **Any agent or shell that can run bash** works out of the box—no source session adapter or link is required.
+- **Receiver (`relay ask <target>`)**: Requires a headless-capable target adapter that executes a turn and returns the reply synchronously.
+
+| Agent (Aliases) | Caller (`relay ask` / `peek` / `steer`) | Receiver (`relay ask <target>`) | Session Inspect (`session list` / `peek`) | Link Mode (`send` / `pull`) | Mid-Turn Steering (`steer` + `hook-install`) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Qoder CLI** (`qoder`, `qoderwork`, `qw`) | ✅ | ✅ (`qodercli -p -f json`) | ✅ | ✅ Source & Target | ✅ `settings.json` `PostToolUse` |
+| **Claude Code** (`claude`, `claudecode`) | ✅ | ✅ (`claude -p --output-format json`) | ✅ | ✅ Source & Target | ✅ `settings.json` (+ detects `settings.local.json`) |
+| **OpenAI Codex CLI** (`codex`) | ✅ | ✅ (`codex exec --json -o`) | ✅ | ✅ Source & Target | ❌ (uses separate `hooks.json`) |
+| **Pi Coding Agent** (`pi`, `pi-agent`) | ✅ | ✅ (`pi -p --session`) | ✅ | ✅ (`pull` in Zed `pi-acp`; `send` headless) | ✅ `extensions/relay-steer.ts` (`deliverAs: "steer"`) |
+| **Google Antigravity** (`antigravity`, `agy`) | ✅ | ❌ (IDE async LS only) | ✅ | ✅ Source & Async Target (`send --to agy`) | ➖ (use `send --to agy` queue) |
+| **Zed Native Agent** (`zed`, `zed-agent`) | ✅ | ❌ (GUI-only, no headless CLI) | ✅ | ⚠️ Source only (`ask` / `pull`) | ❌ |
+| **Any Other CLI / Agent / Shell** (Cursor, OpenCode, Qwen, Kimi, CI, human terminal) | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+> **Example**: Inside **Google Antigravity**, **Claude Code**, **Zed**, or a **human terminal**, you are the **Caller**—run `relay ask qoder -w .worktrees/feat-x -t review -m "..."` directly. To push a reply asynchronously into an open Antigravity IDE chat window, use `relay link` + `relay send <link> --to agy`.
+
+---
+
 ## Architecture Overview
 
 ```mermaid
