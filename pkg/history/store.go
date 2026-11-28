@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kamusis/relay/pkg/adapter"
+	"github.com/kamusis/relay/pkg/config"
 )
 
 var (
@@ -20,19 +21,15 @@ var (
 	ErrTransmissionNotFound = errors.New("transmission not found")
 )
 
-// Store manages appending and reading transmission audit logs in ~/.config/relay/history.jsonl.
+// Store manages appending and reading transmission audit logs in history.jsonl (under RELAY_HOME or ~/.config/relay).
 type Store struct {
 	path string
 	mu   sync.Mutex
 }
 
-// DefaultPath returns the default absolute path to ~/.config/relay/history.jsonl.
+// DefaultPath returns the default absolute path to history.jsonl (respecting RELAY_HOME).
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("unable to determine user home directory: %w", err)
-	}
-	return filepath.Join(home, ".config", "relay", "history.jsonl"), nil
+	return config.StateFile("history.jsonl")
 }
 
 // NewStore creates a Store with a specific file path.

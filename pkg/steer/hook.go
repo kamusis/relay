@@ -178,7 +178,7 @@ func FormatHookJSON(msgs []Message) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// HookSnippet returns copy-pasteable PostToolUse hook configuration for a hook-capable agent.
+// HookSnippet returns copy-pasteable PostToolUse hook or Pi extension configuration for a hook-capable agent.
 func HookSnippet(agentName string) (string, error) {
 	norm := strings.ToLower(strings.TrimSpace(agentName))
 	if norm == "" {
@@ -195,26 +195,24 @@ func HookSnippet(agentName string) (string, error) {
         "hooks": [
           {
             "type": "command",
-            "command": "relay steer drain --format hook-json --read-hook-stdin"
+            "command": "%s"
           }
         ]
       }
     ]
   }
-}`, settingsPath, matcher)
+}`, settingsPath, matcher, HookDrainCommand)
 	}
 
 	switch norm {
 	case "claude", "claudecode":
-		return jsonHook(".claude/settings.json or ~/.claude/settings.json", "Edit|Write|MultiEdit|Bash"), nil
+		spec := supportedHookSpecs[adapter.AgentClaude]
+		return jsonHook(".claude/settings.json, .claude/settings.local.json, or ~/.claude/settings.json", spec.Matcher), nil
 	case "qoder", "qodercli":
-		return jsonHook(".qoder/settings.json or ~/.qoder/settings.json", "Edit|Write|Bash"), nil
+		spec := supportedHookSpecs[adapter.AgentQoder]
+		return jsonHook(".qoder/settings.json or ~/.qoder/settings.json", spec.Matcher), nil
 	case "pi", "pi-agent":
-		return strings.TrimSpace(`
-# Invoke from a Pi tool/turn hook or extension after file edits / bash commands:
-relay steer drain --format text --workspace "$PWD"
-# Or with JSON hook payload on stdin:
-relay steer drain --format hook-json --read-hook-stdin`), nil
+		return "// Save to ~/.pi/agent/extensions/relay-steer.ts (user) or .pi/extensions/relay-steer.ts (project):\n" + strings.TrimSpace(PiExtensionSource), nil
 	default:
 		return "", fmt.Errorf("unsupported hook agent '%s' (supported: claude, qoder, pi)", agentName)
 	}

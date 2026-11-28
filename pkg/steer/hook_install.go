@@ -3,6 +3,7 @@ package steer
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,33 +12,97 @@ import (
 	"github.com/kamusis/relay/pkg/adapter"
 )
 
-// HookDrainCommand is the canonical command installed into PostToolUse hooks.
+// HookDrainCommand is the canonical command installed into PostToolUse JSON hooks.
 const HookDrainCommand = "relay steer drain --format hook-json --read-hook-stdin"
 
-// HookAgentSpec defines settings file location and default tool matcher for a hook-capable JSON-config agent.
+// PiExtensionMarker uniquely identifies the relay-managed Pi extension file.
+const PiExtensionMarker = "relay-steer-extension"
+
+// PiExtensionSource is the TypeScript extension installed into ~/.pi/agent/extensions/relay-steer.ts
+// or <project>/.pi/extensions/relay-steer.ts for Pi Coding Agent.
+const PiExtensionSource = `import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+
+// Managed by relay steer hook-install (relay-steer-extension).
+// Runs: relay steer drain --format text after mutating tool calls and injects
+// pending directives into the active Pi agent loop via deliverAs: "steer".
+const MONITORED_TOOLS = new Set(["edit", "write", "bash"]);
+
+export default function relaySteerExtension(pi: ExtensionAPI) {
+  pi.on("tool_result", async (event, ctx) => {
+    if (!MONITORED_TOOLS.has(event.toolName)) {
+      return;
+    }
+    const args = ["steer", "drain", "--format", "text"];
+    const cwd = ctx.cwd || ctx.sessionManager.getCwd();
+    if (cwd) {
+      args.push("--workspace", cwd);
+    }
+    const sessionId = ctx.sessionManager.getSessionId?.();
+    if (sessionId) {
+      args.push("--target", ` + "`pi:${sessionId}`" + `);
+    }
+    try {
+      const res = await pi.exec("relay", args, { timeout: 5000 });
+      if (res.code !== 0) {
+        return;
+      }
+      const text = (res.stdout || "").trim();
+      if (!text) {
+        return;
+      }
+      pi.sendUserMessage(text, { deliverAs: "steer" });
+    } catch {
+      // Fail open so tool execution is never interrupted if relay is unavailable.
+    }
+  });
+}
+`
+
+// HookInstallKind identifies how a hook-capable agent loads its steering integration.
+type HookInstallKind string
+
+const (
+	// HookKindJSONSettings installs a PostToolUse command hook in settings.json.
+	HookKindJSONSettings HookInstallKind = "json-settings"
+	// HookKindPiExtension installs a TypeScript extension file discovered by Pi.
+	HookKindPiExtension HookInstallKind = "pi-extension"
+)
+
+// HookAgentSpec defines file locations and installation strategy for a hook-capable agent.
 type HookAgentSpec struct {
-	Agent       adapter.AgentType
-	DirName     string
-	SettingsRel string
-	Matcher     string
+	Agent            adapter.AgentType
+	Kind             HookInstallKind
+	UserPathRel      string
+	ProjectPathRel   string
+	ProjectCheckRels []string // Extra project-level paths inspected during detection (e.g. .claude/settings.local.json).
+	Matcher          string
 }
 
 var supportedHookSpecs = map[adapter.AgentType]HookAgentSpec{
 	adapter.AgentClaude: {
-		Agent:       adapter.AgentClaude,
-		DirName:     ".claude",
-		SettingsRel: filepath.Join(".claude", "settings.json"),
-		Matcher:     "Edit|Write|MultiEdit|Bash",
+		Agent:            adapter.AgentClaude,
+		Kind:             HookKindJSONSettings,
+		UserPathRel:      filepath.Join(".claude", "settings.json"),
+		ProjectPathRel:   filepath.Join(".claude", "settings.json"),
+		ProjectCheckRels: []string{filepath.Join(".claude", "settings.local.json")},
+		Matcher:          "Edit|Write|MultiEdit|Bash",
 	},
 	adapter.AgentQoder: {
-		Agent:       adapter.AgentQoder,
-		DirName:     ".qoder",
-		SettingsRel: filepath.Join(".qoder", "settings.json"),
-		Matcher:     "Edit|Write|Bash",
+		Agent:          adapter.AgentQoder,
+		Kind:           HookKindJSONSettings,
+		UserPathRel:    filepath.Join(".qoder", "settings.json"),
+		ProjectPathRel: filepath.Join(".qoder", "settings.json"),
+		Matcher:        "Edit|Write|MultiEdit|Bash",
+	},
+	adapter.AgentPi: {
+		Agent:          adapter.AgentPi,
+		Kind:           HookKindPiExtension,
+		UserPathRel:    filepath.Join(".pi", "agent", "extensions", "relay-steer.ts"),
+		ProjectPathRel: filepath.Join(".pi", "extensions", "relay-steer.ts"),
 	},
 }
 
-// ResolveHookAgents expands an agent selector ("claude", "qoder", or "all") into ordered HookAgentSpecs.
+// ResolveHookAgents expands an agent selector ("claude", "qoder", "pi", or "all") into ordered HookAgentSpecs.
 func ResolveHookAgents(selector string) ([]HookAgentSpec, error) {
 	norm := strings.ToLower(strings.TrimSpace(selector))
 	switch norm {
@@ -45,20 +110,21 @@ func ResolveHookAgents(selector string) ([]HookAgentSpec, error) {
 		return []HookAgentSpec{
 			supportedHookSpecs[adapter.AgentClaude],
 			supportedHookSpecs[adapter.AgentQoder],
+			supportedHookSpecs[adapter.AgentPi],
 		}, nil
 	case "claude", "claudecode":
 		return []HookAgentSpec{supportedHookSpecs[adapter.AgentClaude]}, nil
 	case "qoder", "qodercli":
 		return []HookAgentSpec{supportedHookSpecs[adapter.AgentQoder]}, nil
 	case "pi", "pi-agent":
-		return nil, fmt.Errorf("automatic hook-install is not supported for 'pi' (Pi uses custom extensions/hooks); run 'relay steer hook-snippet --agent pi' for manual setup")
+		return []HookAgentSpec{supportedHookSpecs[adapter.AgentPi]}, nil
 	default:
-		return nil, fmt.Errorf("unsupported hook-install agent '%s' (supported: claude, qoder, all)", selector)
+		return nil, fmt.Errorf("unsupported hook-install agent '%s' (supported: claude, qoder, pi, all)", selector)
 	}
 }
 
-// HookSettingsPath returns the settings.json path for spec under "user" or "project" scope.
-func HookSettingsPath(spec HookAgentSpec, scope, homeDir, projectDir string) (string, error) {
+// HookTargetPath returns the settings or extension file path for spec under "user" or "project" scope.
+func HookTargetPath(spec HookAgentSpec, scope, homeDir, projectDir string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case "", "user":
 		if strings.TrimSpace(homeDir) == "" {
@@ -68,7 +134,7 @@ func HookSettingsPath(spec HookAgentSpec, scope, homeDir, projectDir string) (st
 			}
 			homeDir = h
 		}
-		return filepath.Join(homeDir, spec.SettingsRel), nil
+		return filepath.Join(homeDir, spec.UserPathRel), nil
 	case "project":
 		if strings.TrimSpace(projectDir) == "" {
 			cwd, err := os.Getwd()
@@ -81,7 +147,7 @@ func HookSettingsPath(spec HookAgentSpec, scope, homeDir, projectDir string) (st
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(absDir, spec.SettingsRel), nil
+		return filepath.Join(absDir, spec.ProjectPathRel), nil
 	default:
 		return "", fmt.Errorf("invalid --scope '%s': expected 'user' or 'project'", scope)
 	}
@@ -138,21 +204,117 @@ func IsHookInstalled(settingsPath string) bool {
 	return hasRelayHookInPostToolUse(postToolUse)
 }
 
-// CheckAgentHookInstalled checks user and optional project settings.json files for spec
-// and returns all paths where the relay steer PostToolUse hook is present.
+// IsPiExtensionInstalled reports whether extPath exists and contains the relay-managed Pi extension marker.
+func IsPiExtensionInstalled(extPath string) bool {
+	data, err := os.ReadFile(extPath)
+	if err != nil {
+		return false
+	}
+	content := string(data)
+	return strings.Contains(content, PiExtensionMarker) || strings.Contains(content, "relay steer drain")
+}
+
+// IsAgentHookInstalledAt dispatches installation status detection based on spec.Kind.
+func IsAgentHookInstalledAt(spec HookAgentSpec, targetPath string) bool {
+	if spec.Kind == HookKindPiExtension {
+		return IsPiExtensionInstalled(targetPath)
+	}
+	return IsHookInstalled(targetPath)
+}
+
+// InstallAgentHook dispatches installation based on spec.Kind.
+func InstallAgentHook(spec HookAgentSpec, targetPath string) (bool, error) {
+	if spec.Kind == HookKindPiExtension {
+		return InstallPiExtension(targetPath)
+	}
+	return InstallHook(targetPath, spec.Matcher, HookDrainCommand)
+}
+
+// UninstallAgentHook dispatches removal based on spec.Kind.
+func UninstallAgentHook(spec HookAgentSpec, targetPath string) (bool, error) {
+	if spec.Kind == HookKindPiExtension {
+		return UninstallPiExtension(targetPath)
+	}
+	return UninstallHook(targetPath)
+}
+
+// CheckAgentHookInstalled checks user and optional project paths (including extra project check paths
+// such as .claude/settings.local.json) and returns all paths where the relay steer integration is present.
 func CheckAgentHookInstalled(spec HookAgentSpec, homeDir, projectDir string) []string {
 	var found []string
-	if userPath, err := HookSettingsPath(spec, "user", homeDir, ""); err == nil && IsHookInstalled(userPath) {
-		found = append(found, userPath)
+	seen := make(map[string]struct{})
+	addIfInstalled := func(p string) {
+		clean := filepath.Clean(p)
+		if _, exists := seen[clean]; exists {
+			return
+		}
+		if IsAgentHookInstalledAt(spec, clean) {
+			seen[clean] = struct{}{}
+			found = append(found, clean)
+		}
+	}
+
+	if userPath, err := HookTargetPath(spec, "user", homeDir, ""); err == nil {
+		addIfInstalled(userPath)
 	}
 	if strings.TrimSpace(projectDir) != "" {
-		if projPath, err := HookSettingsPath(spec, "project", "", projectDir); err == nil && IsHookInstalled(projPath) {
-			if len(found) == 0 || filepath.Clean(projPath) != filepath.Clean(found[0]) {
-				found = append(found, projPath)
+		if projPath, err := HookTargetPath(spec, "project", "", projectDir); err == nil {
+			addIfInstalled(projPath)
+		}
+		if absDir, err := filepath.Abs(projectDir); err == nil {
+			for _, extraRel := range spec.ProjectCheckRels {
+				addIfInstalled(filepath.Join(absDir, extraRel))
 			}
 		}
 	}
 	return found
+}
+
+// InstallPiExtension writes the relay-managed TypeScript extension to extPath atomically.
+// It is idempotent when identical content is already installed and refuses to overwrite
+// an unrelated user-authored file lacking the relay marker.
+func InstallPiExtension(extPath string) (bool, error) {
+	var fileMode os.FileMode = 0o644
+	if info, err := os.Stat(extPath); err == nil {
+		fileMode = info.Mode().Perm()
+		existing, readErr := os.ReadFile(extPath)
+		if readErr != nil {
+			return false, fmt.Errorf("failed to read %s: %w", extPath, readErr)
+		}
+		if string(existing) == PiExtensionSource {
+			return false, nil
+		}
+		if !strings.Contains(string(existing), PiExtensionMarker) && !strings.Contains(string(existing), "relay steer drain") {
+			return false, fmt.Errorf("%s already exists and is not managed by relay (refusing to overwrite)", extPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("failed to stat %s: %w", extPath, err)
+	}
+
+	if err := writeFileAtomic(extPath, []byte(PiExtensionSource), fileMode); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UninstallPiExtension removes the relay-managed Pi extension at extPath.
+// Returns removed=false if the file does not exist, and refuses to delete files without the relay marker.
+func UninstallPiExtension(extPath string) (bool, error) {
+	data, err := os.ReadFile(extPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to read %s: %w", extPath, err)
+	}
+	content := string(data)
+	if !strings.Contains(content, PiExtensionMarker) && !strings.Contains(content, "relay steer drain") {
+		return false, fmt.Errorf("%s is not managed by relay (refusing to delete)", extPath)
+	}
+	if err := os.Remove(extPath); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("failed to remove %s: %w", extPath, err)
+	}
+	return true, nil
 }
 
 // InstallHook idempotently merges the relay steer PostToolUse hook into settingsPath
@@ -282,15 +444,16 @@ func UninstallHook(settingsPath string) (bool, error) {
 	return true, nil
 }
 
-// MissingHookWarning inspects local settings.json files for a normalized steer target and
-// returns an actionable warning message if no matching PostToolUse hook is installed.
+// MissingHookWarning inspects local settings and extension files for a normalized steer target and
+// returns an actionable warning message if no matching steering hook/extension is installed.
 func MissingHookWarning(normalizedTarget, homeDir string) string {
 	if strings.HasPrefix(normalizedTarget, WorkspacePrefix) {
 		wsDir := strings.TrimPrefix(normalizedTarget, WorkspacePrefix)
 		claudePaths := CheckAgentHookInstalled(supportedHookSpecs[adapter.AgentClaude], homeDir, wsDir)
 		qoderPaths := CheckAgentHookInstalled(supportedHookSpecs[adapter.AgentQoder], homeDir, wsDir)
-		if len(claudePaths) == 0 && len(qoderPaths) == 0 {
-			return "Warning: no PostToolUse hook detected for claude or qoder (user or project scope). Run 'relay steer hook-install --agent all' so worker hooks can consume queued steers (takes effect on the next session)."
+		piPaths := CheckAgentHookInstalled(supportedHookSpecs[adapter.AgentPi], homeDir, wsDir)
+		if len(claudePaths) == 0 && len(qoderPaths) == 0 && len(piPaths) == 0 {
+			return "Warning: no steering hook/extension detected for claude, qoder, or pi (user or project scope). Run 'relay steer hook-install --agent all' so worker hooks can consume queued steers (takes effect on the next session)."
 		}
 		return ""
 	}
@@ -305,6 +468,9 @@ func MissingHookWarning(normalizedTarget, homeDir string) string {
 		return ""
 	}
 	if len(CheckAgentHookInstalled(spec, homeDir, "")) == 0 {
+		if spec.Kind == HookKindPiExtension {
+			return fmt.Sprintf("Warning: Pi steering extension is not installed for %s. Run 'relay steer hook-install --agent %s' (takes effect on the next session).", agType, agType)
+		}
 		return fmt.Sprintf("Warning: PostToolUse hook is not installed for %s. Run 'relay steer hook-install --agent %s' (takes effect on the next session).", agType, agType)
 	}
 	return ""
@@ -328,9 +494,16 @@ func readSettingsJSON(path string) (map[string]any, os.FileMode, error) {
 		return make(map[string]any), info.Mode().Perm(), nil
 	}
 
+	// Use json.Decoder with UseNumber so integers larger than 2^53 preserve exact precision.
+	dec := json.NewDecoder(strings.NewReader(trimmed))
+	dec.UseNumber()
 	var root map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &root); err != nil {
+	if err := dec.Decode(&root); err != nil {
 		return nil, 0, fmt.Errorf("failed to parse %s as JSON (refusing to overwrite): %w", path, err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return nil, 0, fmt.Errorf("failed to parse %s as JSON (trailing tokens; refusing to overwrite)", path)
 	}
 	if root == nil {
 		root = make(map[string]any)
@@ -342,23 +515,58 @@ func writeSettingsJSONAtomic(path string, root map[string]any, mode os.FileMode)
 	if mode == 0 {
 		mode = 0o600
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal settings JSON: %w", err)
 	}
 	data = append(data, '\n')
+	return writeFileAtomic(path, data, mode)
+}
 
-	tmpFile := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
-	if err := os.WriteFile(tmpFile, data, mode); err != nil {
-		return fmt.Errorf("failed to write temporary settings file: %w", err)
+// resolveWriteTarget resolves an existing symlink to its underlying target path so atomic
+// rename updates the backing file rather than replacing a dotfile manager's symlink.
+func resolveWriteTarget(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		return "", fmt.Errorf("failed to lstat %s: %w", path, err)
 	}
-	if err := os.Rename(tmpFile, path); err != nil {
+	if info.Mode()&os.ModeSymlink == 0 {
+		return path, nil
+	}
+	if resolved, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
+		return resolved, nil
+	}
+	// Handle dangling symlinks by resolving the link target relative to the symlink's directory.
+	linkTarget, readErr := os.Readlink(path)
+	if readErr != nil {
+		return "", fmt.Errorf("failed to read symlink %s: %w", path, readErr)
+	}
+	if !filepath.IsAbs(linkTarget) {
+		linkTarget = filepath.Join(filepath.Dir(path), linkTarget)
+	}
+	return filepath.Clean(linkTarget), nil
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	targetPath, err := resolveWriteTarget(path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	tmpFile := fmt.Sprintf("%s.%d.%d.tmp", targetPath, os.Getpid(), time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, mode); err != nil {
+		return fmt.Errorf("failed to write temporary file: %w", err)
+	}
+	if err := os.Rename(tmpFile, targetPath); err != nil {
 		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to atomically replace %s: %w", path, err)
+		return fmt.Errorf("failed to atomically replace %s: %w", targetPath, err)
 	}
 	return nil
 }

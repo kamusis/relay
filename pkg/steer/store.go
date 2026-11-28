@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kamusis/relay/pkg/adapter"
+	"github.com/kamusis/relay/pkg/config"
 )
 
 // Status tracks the lifecycle of a steering directive in the queue.
@@ -71,13 +72,9 @@ type Store struct {
 	mu   sync.Mutex
 }
 
-// DefaultPath returns the default absolute path ~/.config/relay/steer.jsonl.
+// DefaultPath returns the default absolute path to steer.jsonl (under RELAY_HOME or ~/.config/relay).
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("unable to determine user home directory: %w", err)
-	}
-	return filepath.Join(home, ".config", "relay", "steer.jsonl"), nil
+	return config.StateFile("steer.jsonl")
 }
 
 // NewStore creates a Store backed by an explicit file path.

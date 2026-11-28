@@ -193,16 +193,17 @@ For observing a worker agent while it is still executing (without waiting for it
    relay steer qoder:e09937bb -m "Add empty-PATH test assertion"
    ```
    - Inspect or cancel queued directives: `relay steer list [--all]` / `relay steer clear [target] [--id <prefix>]`.
-3. **Configure `PostToolUse` Hook on Worker Agent (One-Time Setup)**:
-   - Install idempotently into `~/.claude/settings.json` and/or `~/.qoder/settings.json` (preserves all existing hooks; takes effect on the next session):
+3. **Configure Worker Hook / Extension (One-Time Setup)**:
+   - Install idempotently for Claude Code (`~/.claude/settings.json`), Qoder CLI (`~/.qoder/settings.json`), and Pi (`~/.pi/agent/extensions/relay-steer.ts`) — preserves all existing settings/hooks; takes effect on the next session:
      ```bash
-     relay steer hook-install --agent all          # or --agent claude / --agent qoder (--scope user|project)
+     relay steer hook-install --agent all          # or --agent claude / qoder / pi (--scope user|project)
      relay steer hook-install --status             # inspect installation status
      relay steer hook-install --agent all --uninstall
      ```
-   - For manual setups (including Pi), print a snippet via `relay steer hook-snippet --agent claude|qoder|pi` or point the hook command at `scripts/relay-steer-hook.sh`.
-   - If `relay steer` is called while no `PostToolUse` hook is installed for the target, it emits a warning on `stderr` so queued directives never sit silently unconsumed.
-   - The hook runs `relay steer drain --format hook-json --read-hook-stdin`: when no steer is queued it exits `0` silently; when pending steers match the worker's `session_id` or `cwd`, it atomically marks them `consumed` and emits `PostToolUse` JSON (`additionalContext`, plus `decision: "block"` when `--blocking` is set).
+   - For manual setups (including `.claude/settings.local.json`), print a ready-to-paste config or TypeScript extension via `relay steer hook-snippet --agent claude|qoder|pi`.
+   - If `relay steer` is called while no hook/extension is installed for the target (checking user scope, project scope, and `.claude/settings.local.json`), it emits a warning on `stderr` so queued directives never sit silently unconsumed.
+   - Claude Code and Qoder CLI hooks run `relay steer drain --format hook-json --read-hook-stdin` (silent exit `0` when empty; emits `PostToolUse` `additionalContext` JSON when directives match). Pi's `relay-steer.ts` extension hooks `tool_result` and injects drained text via `pi.sendUserMessage(text, { deliverAs: "steer" })`.
+   - Set `RELAY_HOME=/path/to/dir` to isolate all Relay state (`links.json`, `history.jsonl`, `steer.jsonl`, `templates/`) from `~/.config/relay`.
 4. **Supervisor Prompt Template**:
    - Built-in template `supervise` (`relay template show supervise`) encodes the high-signal supervision checklist.
 

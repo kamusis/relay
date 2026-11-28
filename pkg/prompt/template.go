@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+
+	"github.com/kamusis/relay/pkg/config"
 )
 
 // TemplateInfo represents metadata and content of a prompt template.
@@ -35,12 +37,10 @@ type Manager struct {
 	builtins  map[string]TemplateInfo
 }
 
-// NewDefaultManager creates a Manager configured with the default user template directory.
+// NewDefaultManager creates a Manager configured with the default user template directory
+// (under RELAY_HOME/templates or ~/.config/relay/templates).
 func NewDefaultManager() *Manager {
-	var customDir string
-	if home, err := os.UserHomeDir(); err == nil {
-		customDir = filepath.Join(home, ".config", "relay", "templates")
-	}
+	customDir, _ := config.StateFile("templates")
 	return NewManager(customDir)
 }
 

@@ -276,7 +276,7 @@ relay peek review-mopheus
 ```
 
 ### `relay steer`
-Queue and drain mid-turn steering directives for hook-capable agents (Claude Code, Qoder CLI, Pi) via a cross-process locked queue (`~/.config/relay/steer.jsonl`).
+Queue and drain mid-turn steering directives for hook-capable agents (Claude Code, Qoder CLI, Pi) via a cross-process locked queue (`$RELAY_HOME/steer.jsonl`, defaulting to `~/.config/relay/steer.jsonl`).
 ```bash
 # Queue a mid-turn correction targeting a worktree (matches subdirectories) or session
 relay steer .worktrees/fix-auth -m "Use /usr/sbin/ioreg instead of bare ioreg" --blocking
@@ -289,14 +289,17 @@ relay steer clear [target] [--id <prefix>]
 # Atomically consume pending directives inside a PostToolUse hook
 relay steer drain --format hook-json --read-hook-stdin
 
-# Install, inspect, or remove the PostToolUse hook automatically (preserves existing hooks)
-relay steer hook-install --agent all          # or --agent claude / --agent qoder
+# Install, inspect, or remove steering hooks/extensions automatically
+# (Claude Code & Qoder CLI: settings.json PostToolUse; Pi: extensions/relay-steer.ts)
+relay steer hook-install --agent all          # or --agent claude / qoder / pi
 relay steer hook-install --status
 relay steer hook-install --agent all --uninstall
 
-# Or print a copy-pasteable PostToolUse hook snippet (including manual Pi setup)
+# Or print a copy-pasteable hook / Pi TypeScript extension snippet
 relay steer hook-snippet --agent claude       # or qoder / pi
 ```
+
+> **Isolated State (`RELAY_HOME`)**: Set `RELAY_HOME=/path/to/dir` to override the default `~/.config/relay` state directory for `links.json`, `history.jsonl`, `steer.jsonl`, and `templates/` (useful for CI, tests, or sandboxed agent runtimes).
 
 ### `relay template`
 Manage and preview prompt templates for relay transmissions.

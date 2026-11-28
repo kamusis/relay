@@ -210,35 +210,64 @@ func TestSteerHookInstallLifecycleAndWarningSuppression(t *testing.T) {
 		t.Fatalf("expected not installed status, got:\n%s", statusBefore.String())
 	}
 
-	// 2. Install for qoder
+	// 2. Install for all (claude, qoder, pi)
 	var installOut bytes.Buffer
-	if err := executeSteerHookInstall(&installOut, "qoder", "user", home, "", false, false); err != nil {
-		t.Fatalf("install qoder: %v", err)
+	if err := executeSteerHookInstall(&installOut, "all", "user", home, "", false, false); err != nil {
+		t.Fatalf("install all: %v", err)
 	}
-	if !strings.Contains(installOut.String(), "Installed relay steer PostToolUse hook for qoder") {
-		t.Fatalf("unexpected install output:\n%s", installOut.String())
-	}
-
-	// 3. Enqueue for qoder now produces NO missing-hook warning on stderr
-	var enqOut, enqErr bytes.Buffer
-	if err := executeSteerEnqueue(&enqOut, &enqErr, store, home, "qoder:sess-1", "check lock", "agy", false); err != nil {
-		t.Fatalf("executeSteerEnqueue: %v", err)
-	}
-	if enqErr.Len() != 0 {
-		t.Fatalf("expected no warning after qoder hook install, got: %q", enqErr.String())
+	for _, want := range []string{
+		"Installed relay steer PostToolUse hook for claude",
+		"Installed relay steer PostToolUse hook for qoder",
+		"Installed relay steer steering extension for pi",
+	} {
+		if !strings.Contains(installOut.String(), want) {
+			t.Fatalf("missing %q in install output:\n%s", want, installOut.String())
+		}
 	}
 
-	// 4. Reject conflicting --uninstall + --status
+	// 3. Enqueue for qoder and pi now produce NO missing-hook warnings on stderr
+	for _, target := range []string{"qoder:sess-1", "pi:sess-2"} {
+		var enqOut, enqErr bytes.Buffer
+		if err := executeSteerEnqueue(&enqOut, &enqErr, store, home, target, "check lock", "agy", false); err != nil {
+			t.Fatalf("executeSteerEnqueue(%s): %v", target, err)
+		}
+		if enqErr.Len() != 0 {
+			t.Fatalf("expected no warning for %s after hook install, got: %q", target, enqErr.String())
+		}
+	}
+
+	// 4. Reject conflicting --uninstall + --status and --dir with --scope user
 	if err := executeSteerHookInstall(&installOut, "qoder", "user", home, "", true, true); err == nil {
 		t.Fatal("expected error when both --uninstall and --status are set")
 	}
-
-	// 5. Uninstall removes the hook cleanly
-	var uninstallOut bytes.Buffer
-	if err := executeSteerHookInstall(&uninstallOut, "qoder", "user", home, "", true, false); err != nil {
-		t.Fatalf("uninstall qoder: %v", err)
+	if err := executeSteerHookInstall(&installOut, "qoder", "user", home, "/tmp/some-repo", false, false); err == nil {
+		t.Fatal("expected error when --dir is passed with --scope user")
 	}
-	if !strings.Contains(uninstallOut.String(), "Removed relay steer PostToolUse hook for qoder") {
-		t.Fatalf("unexpected uninstall output:\n%s", uninstallOut.String())
+
+	// 5. Reject unexpected positional arguments on hook-install and hook-snippet
+	steerCmd := newSteerCmd()
+	for _, sub := range []string{"hook-install", "hook-snippet"} {
+		cmd, _, err := steerCmd.Find([]string{sub})
+		if err != nil {
+			t.Fatalf("find %s: %v", sub, err)
+		}
+		if err := cmd.Args(cmd, []string{"unexpected-arg"}); err == nil {
+			t.Fatalf("expected %s to reject positional arguments", sub)
+		}
+	}
+
+	// 6. Uninstall removes hooks and Pi extension cleanly
+	var uninstallOut bytes.Buffer
+	if err := executeSteerHookInstall(&uninstallOut, "all", "user", home, "", true, false); err != nil {
+		t.Fatalf("uninstall all: %v", err)
+	}
+	for _, want := range []string{
+		"Removed relay steer PostToolUse hook for claude",
+		"Removed relay steer PostToolUse hook for qoder",
+		"Removed relay steer steering extension for pi",
+	} {
+		if !strings.Contains(uninstallOut.String(), want) {
+			t.Fatalf("missing %q in uninstall output:\n%s", want, uninstallOut.String())
+		}
 	}
 }

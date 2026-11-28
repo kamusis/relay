@@ -59,42 +59,50 @@ func executeSteerHookInstall(
 	if uninstall && statusOnly {
 		return fmt.Errorf("--uninstall and --status cannot be used together")
 	}
+	normScope := strings.ToLower(strings.TrimSpace(scope))
+	if strings.TrimSpace(projectDir) != "" && normScope != "project" {
+		return fmt.Errorf("--dir can only be used with --scope project")
+	}
 	specs, err := steer.ResolveHookAgents(agentSelector)
 	if err != nil {
 		return err
 	}
 
 	for _, spec := range specs {
-		settingsPath, err := steer.HookSettingsPath(spec, scope, homeDir, projectDir)
+		targetPath, err := steer.HookTargetPath(spec, scope, homeDir, projectDir)
 		if err != nil {
 			return err
+		}
+		noun := "PostToolUse hook"
+		if spec.Kind == steer.HookKindPiExtension {
+			noun = "steering extension"
 		}
 		switch {
 		case statusOnly:
 			state := "not installed"
-			if steer.IsHookInstalled(settingsPath) {
+			if steer.IsAgentHookInstalledAt(spec, targetPath) {
 				state = "installed"
 			}
-			fmt.Fprintf(out, "%-8s  %-13s  %s\n", spec.Agent, state, settingsPath)
+			fmt.Fprintf(out, "%-8s  %-13s  %s\n", spec.Agent, state, targetPath)
 		case uninstall:
-			removed, err := steer.UninstallHook(settingsPath)
+			removed, err := steer.UninstallAgentHook(spec, targetPath)
 			if err != nil {
 				return err
 			}
 			if removed {
-				fmt.Fprintf(out, "Removed relay steer PostToolUse hook for %s from %s\n", spec.Agent, settingsPath)
+				fmt.Fprintf(out, "Removed relay steer %s for %s from %s\n", noun, spec.Agent, targetPath)
 			} else {
-				fmt.Fprintf(out, "No relay steer PostToolUse hook found for %s in %s\n", spec.Agent, settingsPath)
+				fmt.Fprintf(out, "No relay steer %s found for %s in %s\n", noun, spec.Agent, targetPath)
 			}
 		default:
-			changed, err := steer.InstallHook(settingsPath, spec.Matcher, steer.HookDrainCommand)
+			changed, err := steer.InstallAgentHook(spec, targetPath)
 			if err != nil {
 				return err
 			}
 			if changed {
-				fmt.Fprintf(out, "Installed relay steer PostToolUse hook for %s in %s (takes effect on the next session)\n", spec.Agent, settingsPath)
+				fmt.Fprintf(out, "Installed relay steer %s for %s in %s (takes effect on the next session)\n", noun, spec.Agent, targetPath)
 			} else {
-				fmt.Fprintf(out, "Relay steer PostToolUse hook is already installed for %s in %s\n", spec.Agent, settingsPath)
+				fmt.Fprintf(out, "Relay steer %s is already installed for %s in %s\n", noun, spec.Agent, targetPath)
 			}
 		}
 	}
@@ -422,7 +430,8 @@ and drains them atomically inside PostToolUse hooks. Targets may be an agent ses
 	var hookAgent string
 	hookSnippetCmd := &cobra.Command{
 		Use:   "hook-snippet",
-		Short: "Print ready-to-paste PostToolUse hook setup for Claude Code, Qoder CLI, or Pi",
+		Short: "Print ready-to-paste PostToolUse hook or Pi extension setup for Claude Code, Qoder CLI, or Pi",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			snippet, err := steer.HookSnippet(hookAgent)
 			if err != nil {
@@ -434,7 +443,7 @@ and drains them atomically inside PostToolUse hooks. Targets may be an agent ses
 	}
 	hookSnippetCmd.Flags().StringVar(&hookAgent, "agent", "claude", "Target hook-capable agent: claude, qoder, pi")
 
-	// `relay steer hook-install [--agent claude|qoder|all] [--scope user|project] [--dir <path>] [--uninstall|--status]`
+	// `relay steer hook-install [--agent claude|qoder|pi|all] [--scope user|project] [--dir <path>] [--uninstall|--status]`
 	var (
 		installAgent     string
 		installScope     string
@@ -444,17 +453,19 @@ and drains them atomically inside PostToolUse hooks. Targets may be an agent ses
 	)
 	hookInstallCmd := &cobra.Command{
 		Use:   "hook-install",
-		Short: "Install, inspect, or remove the PostToolUse steering hook in Claude Code / Qoder settings.json",
-		Example: `  # Install globally for both Claude Code and Qoder CLI (idempotent, preserves existing hooks)
+		Short: "Install, inspect, or remove steering hooks/extensions for Claude Code, Qoder CLI, and Pi",
+		Args:  cobra.NoArgs,
+		Example: `  # Install globally for Claude Code, Qoder CLI, and Pi (idempotent, preserves existing hooks)
   relay steer hook-install --agent all
 
-  # Install only for Qoder CLI in user settings (~/.qoder/settings.json)
+  # Install only for Qoder CLI (~/.qoder/settings.json) or Pi (~/.pi/agent/extensions/relay-steer.ts)
   relay steer hook-install --agent qoder
+  relay steer hook-install --agent pi
 
-  # Install into a specific project (.claude/settings.json)
+  # Install into a specific project (.claude/settings.json, .qoder/settings.json, or .pi/extensions/relay-steer.ts)
   relay steer hook-install --agent claude --scope project --dir /path/to/repo
 
-  # Check installation status or remove hook
+  # Check installation status or remove hook/extension
   relay steer hook-install --status
   relay steer hook-install --agent all --uninstall`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -470,11 +481,11 @@ and drains them atomically inside PostToolUse hooks. Targets may be an agent ses
 			)
 		},
 	}
-	hookInstallCmd.Flags().StringVar(&installAgent, "agent", "all", "Target agent: claude, qoder, or all")
-	hookInstallCmd.Flags().StringVar(&installScope, "scope", "user", "Settings scope: user (~/.<agent>/settings.json) or project (<dir>/.<agent>/settings.json)")
-	hookInstallCmd.Flags().StringVar(&installDir, "dir", "", "Project directory when --scope project is used (defaults to cwd)")
-	hookInstallCmd.Flags().BoolVar(&installUninstall, "uninstall", false, "Remove the relay steer PostToolUse hook from settings.json")
-	hookInstallCmd.Flags().BoolVar(&installStatus, "status", false, "Check whether the relay steer PostToolUse hook is installed")
+	hookInstallCmd.Flags().StringVar(&installAgent, "agent", "all", "Target agent: claude, qoder, pi, or all")
+	hookInstallCmd.Flags().StringVar(&installScope, "scope", "user", "Install scope: user or project")
+	hookInstallCmd.Flags().StringVar(&installDir, "dir", "", "Project directory (only valid with --scope project; defaults to cwd)")
+	hookInstallCmd.Flags().BoolVar(&installUninstall, "uninstall", false, "Remove the relay steer hook/extension")
+	hookInstallCmd.Flags().BoolVar(&installStatus, "status", false, "Check whether the relay steer hook/extension is installed")
 
 	steerCmd.AddCommand(addCmd)
 	steerCmd.AddCommand(listCmd)

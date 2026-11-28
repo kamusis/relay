@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kamusis/relay/pkg/adapter"
+	"github.com/kamusis/relay/pkg/config"
 )
 
 var (
@@ -20,19 +21,15 @@ var (
 	ErrLinkAlreadyExists = errors.New("link already exists")
 )
 
-// Store manages persistence of named links in ~/.config/relay/links.json.
+// Store manages persistence of named links in links.json (under RELAY_HOME or ~/.config/relay).
 type Store struct {
 	path string
 	mu   sync.Mutex
 }
 
-// DefaultPath returns the default absolute path to ~/.config/relay/links.json.
+// DefaultPath returns the default absolute path to links.json (respecting RELAY_HOME).
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("unable to determine user home directory: %w", err)
-	}
-	return filepath.Join(home, ".config", "relay", "links.json"), nil
+	return config.StateFile("links.json")
 }
 
 // NewStore creates a Store with a specific file path.

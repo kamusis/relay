@@ -96,12 +96,23 @@ func TestFormatHookJSON(t *testing.T) {
 }
 
 func TestHookSnippet(t *testing.T) {
-	for _, ag := range []string{"claude", "qoder", "pi"} {
+	for _, ag := range []string{"claude", "qoder"} {
 		s, err := HookSnippet(ag)
-		if err != nil || !strings.Contains(s, "relay steer drain") {
+		if err != nil || !strings.Contains(s, HookDrainCommand) || !strings.Contains(s, "Edit|Write|MultiEdit|Bash") {
 			t.Fatalf("HookSnippet(%q) = %q, %v", ag, s, err)
 		}
 	}
+
+	piSnippet, err := HookSnippet("pi")
+	if err != nil {
+		t.Fatalf("HookSnippet(pi) error = %v", err)
+	}
+	for _, want := range []string{`pi.on("tool_result"`, `deliverAs: "steer"`, `pi.exec("relay"`, PiExtensionMarker} {
+		if !strings.Contains(piSnippet, want) {
+			t.Fatalf("HookSnippet(pi) missing %q:\n%s", want, piSnippet)
+		}
+	}
+
 	if _, err := HookSnippet("unknown-agent"); err == nil {
 		t.Fatal("expected error for unsupported hook agent")
 	}
