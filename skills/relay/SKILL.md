@@ -1,13 +1,14 @@
 ---
 name: relay
-description: Cross-agent communication and peer-review orchestration across Google Antigravity, Zed native Agent (`zed`), Pi Coding Agent (`pi` / Zed `pi-acp`), and Qoder CLI (https://qoder.com/cli). Use whenever the user asks to relay work results, code changes, or review tasks between Antigravity, Zed, Pi, and Qoder sessions (e.g., "把 agy 会话里的工作成果发给 qoder 审核", "让 qoder 审一下当前代码", "把 qoder 评审传回 agy", "建立 zed 和 qoder 的 link", "建立 pi 和 qoder 的 link", "relay send", "relay pull"). Handles autonomous session discovery, auto-creation of missing Qoder sessions, auto-creation of missing links, headless delivery, and synchronous pull for active editor sessions.
+description: Cross-agent communication, direct headless peer review (`relay ask`), live progress inspection (`relay peek`), and mid-turn steering (`relay steer`) across Qoder CLI, Claude Code, Codex CLI, Pi Coding Agent, Google Antigravity, and Zed. Use whenever the user asks to have another agent review code, ask Qoder/Claude/Codex/Pi for a second opinion, inspect in-flight worktrees/sessions, steer a running worker, or bridge sessions via links (e.g., "让 qoder 审一下当前代码", "用 claude/codex 复核", "relay ask", "relay peek", "relay steer", "把 agy 会话发给 qoder", "relay send", "relay pull"). Defaults to linkless one-command `relay ask` (works from any agent or shell); keeps `relay link`/`send`/`pull` for external terminal bridging or async push into Antigravity chat.
 ---
 
 # Relay: Cross-Agent Communication & Peer Review
 
-This skill orchestrates background, cross-agent communication between Google Antigravity, Zed native Agent (`zed`), Pi Coding Agent (`pi` / Zed `pi-acp`), and Qoder using the `relay` CLI (`~/.local/bin/relay`).
+This skill orchestrates cross-agent peer review, live supervision, and session bridging using the `relay` CLI (`~/.local/bin/relay`).
 
-It enables disparate AI agents to conduct asynchronous peer code reviews, pass context, and exchange deliverables without requiring human copy-pasting or opening desktop GUI windows.
+- **Default mode (`relay ask`)**: Linkless, one-command synchronous invocation of headless targets (`qoder`, `claude`, `codex`, `pi`). Works from **any** calling agent that can run bash (Antigravity, Claude Code, Codex, Zed, Pi, Mopheus tasks, or a human terminal) without needing a source session adapter or pre-created link.
+- **Optional bidirectional channel mode (`relay link` / `send` / `pull`)**: Retained for humans/scripts bridging two live chat sessions from an external terminal, or when you explicitly want Qoder's reply pushed asynchronously into an Antigravity chat window.
 
 ---
 
@@ -20,152 +21,42 @@ export PATH=$PATH:$HOME/.local/bin
 
 | Operation | Command |
 | :--- | :--- |
-| **List Sessions** | `relay session list [-w <workspace>] [-g]` |
-| **List Links** | `relay link list` |
-| **Create Link** | `relay link create <link-name> <endpoint-a> <endpoint-b>` |
-| **Relay Output** | `relay send <link-name> --to <target-agent> "<prompt>"` |
-| **Pull Output (Zed/Pi)** | `relay pull <link-name> --from <source-agent>` |
+| **Ask / Peer Review (Default)** | `relay ask <qoder\|claude\|codex\|pi>[:id] -w <worktree> [-t review\|followup] -m "<prompt>" [--new] [--json]` |
 | **Peek Live Progress** | `relay peek <worktree\|agent:id\|link> [--diff] [-f <file>] [--json]` |
 | **Steer (Hook Agents)** | `relay steer <worktree\|agent:id> -m "<correction>" [--blocking]` |
 | **Steer Queue & Hook** | `relay steer list [--all]` / `relay steer hook-install --agent all\|claude\|qoder\|pi [--status\|--uninstall]` / `relay steer drain --format hook-json --read-hook-stdin` |
-| **View Audit Log** | `relay log <link-name> [-n <limit>]` |
+| **List Sessions** | `relay session list [--agent qoder\|claude\|codex\|pi\|agy\|zed] [-w <workspace>] [-g]` |
+| **View Audit Log** | `relay log [ask\|<link-name>] [-n <limit>]` |
+| **Bidirectional Link (Optional)** | `relay link create <name> <src> <tgt>` / `relay send <name> --to <agent>` / `relay pull <name> --from <agent>` |
 
 ---
 
-## 2. Autonomous Peer-Review Workflow
+## 2. Default Peer-Review Workflow (`relay ask` — No Link Required)
 
-When the user asks to **"把 agy 某个会话的工作成果发给 qoder 审核"** (or similar requests), follow this standard 5-step pipeline:
+Whenever the user asks to **"让 qoder 审一下当前代码"** (or asks Claude Code / Codex / Pi to review or double-check work), use **`relay ask`** directly:
 
+### Step 1: Dispatch Round 1 Review (1 Command)
+```bash
+relay ask qoder -w <worktree_path> -t review -m "工单: <工单标题/ID>\nWorktree: <worktree_path>\n分支: <branch_name>\n【重点关注】<关注模块或改动说明>"
 ```
-[Step 1: Resolve AGY Source]
-           │
-           ▼
-[Step 2: Find or Auto-Create Qoder Session]
-           │
-           ▼
-[Step 3: Find or Auto-Create Link]
-           │
-           ▼
-[Step 4: Execute `relay send --to qoder`]
-           │
-           ▼
-[Step 5: Relay Verdict Back to AGY]
-```
+- **Zero setup**: When given a bare agent name (`qoder`, `claude`, `codex`, `pi`), `relay ask` automatically reuses the most recently updated session in `<worktree_path>` — or creates a fresh headless session on the fly in the same single turn (pass `--new` to force a fresh session).
+- **Clean output & provenance**: The reviewer's full reply is printed directly to `stdout` (immediately readable by the calling agent), while `[relay ask] session=<agent>:<short_id> tx=<tx_id>` is printed to `stderr` and audited in `$RELAY_HOME/history.jsonl` (`link_name: "ask"`).
+- **Templates**: `-t review` drives `/verification-before-completion` (Phase A `ponytail-review` + Phase B architectural guardrails). Omit `-t` for freeform ad-hoc questions (`relay ask claude -w . -m "Check edge cases in pkg/steer"`).
+- **Target choice**: Works identically across headless receivers: `qoder`, `claude`, `codex`, `pi`.
 
-### Step 1: Resolve the Source Session (Antigravity, Zed, or Pi)
-1. **If running inside Pi Coding Agent (`$PI_SESSION_ID` is set)**:
-   - Use `srcEndpoint = pi:$PI_SESSION_ID` directly (zero ambiguity).
-2. **If running inside Zed native Agent Panel**:
-   - Run `relay session list --agent zed -w <workspace>` to locate Zed threads for the workspace (reads `threads.db` read-only).
-   - If the user provided a thread ID or title snippet (e.g. `8878e5d3`), match it directly.
-   - Otherwise, match the newest updated thread (`UPDATED` top row) for the current workspace. *(Note: unlike Pi, Zed native Agent does not expose a session ID env var; if multiple Zed threads are active in the same workspace, disambiguate by thread summary or ask the user for the short ID.)*
-   - Record `srcEndpoint = zed:<zed-thread-id>`.
-3. **If running inside Antigravity**:
-   - Run `relay session list -w <workspace>` to locate available Antigravity sessions in the workspace.
-   - If the user provided a session ID or title snippet (e.g. `3dfb0b87`), match it against the listed sessions.
-   - If the user referred to "当前会话" (current session), identify the active conversation UUID from the current environment context or match the latest updated session.
-   - Record `srcEndpoint = agy:<agy-session-id>`.
-
-### Step 2: Resolve or Auto-Create the Target Session (Qoder)
-1. Query existing Qoder sessions for the target workspace:
+### Step 2: Multi-Round Convergence Loop (If Changes Requested)
+If Round 1 returns `Verdict: CHANGES REQUESTED`:
+1. Implement the required fixes in the worktree and run local verification (`go test`, `vitest`, `pnpm typecheck`, etc.).
+2. Send Round 2+ fix evidence to the **exact reviewer session ID** printed on `stderr` in Step 1 using `-t followup`:
    ```bash
-   relay session list -w <workspace>
+   relay ask qoder:<session_id> -t followup -m "已针对上一轮评审意见完成整改：1. ...; 2. ...。验证已全部通过，请核验阻断项闭环并给出终审裁决。"
    ```
-2. **If an existing Qoder session is found**:
-   - Use that session ID: `tgtSessionID = <qoder-session-id>`.
-3. **If NO Qoder session exists for the workspace (Auto-Bootstrapping)**:
-   - Initialize a brand new headless Qoder session using `qodercli`:
-     ```bash
-     qodercli -w <workspace> --dangerously-skip-permissions -p "你是本项目的资深架构与代码评审员，请保持待命进行审查。"
-     ```
-     *(If `qodercli` is not in PATH, use `~/.local/bin/qodercli` or fallback to `~/.qoder/remote/protocol-v1/installs/*/*/bin/qoder-worker-runtime`).*
-   - Re-run `relay session list -w <workspace>` to capture the newly created Qoder session ID: `tgtSessionID = <new-id>`.
-   - Inform the user that a dedicated Qoder reviewer session has been auto-created.
+3. Repeat until the reviewer outputs `Verdict: APPROVED`.
 
-### Step 3: Resolve or Auto-Create the Link
-1. Inspect existing links:
-   ```bash
-   relay link list
-   ```
-2. Check if any link already connects `srcSessionID` and `tgtSessionID`:
-   - If found (e.g. `relay-test`), reuse that link: `linkName = <existing-link>`.
-3. **If NO link connects them (Auto-Linking)**:
-   - Generate a clean, descriptive link name based on the workspace basename:
-     - Format: `review-<workspace-name>` (e.g. `review-relay`).
-     - If that name is taken, append a short hash: `review-<workspace-name>-<short-id>`.
-   - Create the link:
-     ```bash
-     relay link create <link-name> <srcSessionID> <tgtSessionID>
-     ```
-   - Inform the user that the communication link has been created.
-
-### Step 4: Execute the Relay to Qoder
-1. Send the review request from Antigravity to Qoder:
-   - **For Standard Code Review (Mandatory for Review Gate)**:
-     Use **Template mode (`-t review`)** to automatically drive `/verification-before-completion` (Phase A `ponytail-review` + Phase B `mopheus-code-review` / repository guardrails):
-     ```bash
-     relay send <link-name> --to qoder -t review -m "工单: <工单标题/ID>\nWorktree: <worktree_path>\n分支: <branch_name>\n【重点关注】<关注模块或改动说明>"
-     ```
-   - **For Free / Ad-hoc Messaging**:
-     `-m` is completely freeform and unrestricted when `-t` is omitted:
-     ```bash
-     relay send <link-name> --to qoder -m "请快速看下这段代码是否有竞态风险"
-     ```
-   - Using `-m` (with or without `-t`) delivers directly:
-     - It **bypasses source transcript extraction** (completely avoiding transcript contamination from intermediate peripheral chat like "已停止重定向").
-     - It **bypasses busy state checks** (allowing the active agent to call `relay send` without self-deadlock).
-2. **Template Management**:
-   - List available templates: `relay template list`
-   - Inspect template content: `relay template show review`
-   - Custom templates can be placed in `~/.config/relay/templates/*.tmpl`.
-3. **Execution Characteristics**:
-   - Qoder will run headlessly via `qodercli` without needing the desktop GUI app.
-   - For multi-tool reasoning tasks, Qoder may run `git log`, inspect files, or run tests. It typically completes in 30–60 seconds.
-   - `relay send` will wait for Qoder to complete and print delivery details (Transmission ID, From, To, Relayed Body bytes).
-   - If delivery succeeds, the audit log status updates to `delivered`.
-
-### Step 5: Retrieve the Verdict back to the Orchestrator
-Once Qoder finishes generating its review:
-1. **When orchestrating from Antigravity**:
-   Relay Qoder's completed output back into Antigravity (using pure forwarding or forward+append):
-   ```bash
-   # Pure forwarding of Qoder's latest review:
-   relay send <link-name> --to agy
-
-   # Or forwarding annotated with directive:
-   relay send <link-name> --to agy -m "查收 Qoder 评审结论与整改意见" --append
-   ```
-2. **When orchestrating from Zed native Agent (`zed`) or Pi in Zed (`pi-acp`)**:
-   Use **`relay pull`** instead of `relay send --to zed` / `relay send --to pi` so the verdict enters the live Zed session directly through stdout without mutating Zed's open `threads.db` or racing against `pi-acp`'s in-memory session tree:
-   ```bash
-   relay pull <link-name> --from qoder
-   ```
-   - `relay pull` enforces the exact same pre-flight checks, busy guard, metadata self-healing, and `history.jsonl` audit logging as `relay send`.
-   - `relay send <link-name> --to zed` is intentionally disabled (returns a hint pointing to `relay pull`); `relay send <link-name> --to pi` should only be used when targeting a background headless Pi session that is **not** currently open in Zed.
-3. Check status:
-   ```bash
-   relay log <link-name> -n 2
-   ```
-
-### Step 6: Multi-Round Convergence Loop (If Changes Requested)
-If Qoder requested changes or found blocking bugs in Round 1:
-1. **Implement the Fixes in Workspace**:
-   - Make the necessary code/test edits in the worktree.
-   - Run verification (e.g. `go test`, `pnpm typecheck`, `vitest`).
-2. **Send Round 2+ Fix Evidence to Qoder via `-t followup`**:
-   ```bash
-   relay send <link-name> --to qoder -t followup -m "已针对上一轮评审意见完成整改：1. ...; 2. ...。验证已全部通过，请核验阻断项闭环并给出终审裁决。"
-   ```
-3. **Retrieve Round 2 Verdict back to the Orchestrator**:
-   - **Antigravity**:
-     ```bash
-     relay send <link-name> --to agy
-     ```
-   - **Zed native Agent (`zed`) or Pi in Zed (`pi-acp`)**:
-     ```bash
-     relay pull <link-name> --from qoder
-     ```
-4. Confirm final approval (`Verdict: APPROVED`) before completing the development turn or preparing PR.
+### Template Management
+- List built-in and custom templates: `relay template list`
+- Preview a template: `relay template show review` / `followup` / `supervise`
+- Custom templates live in `$RELAY_HOME/templates/*.tmpl` (default `~/.config/relay/templates/*.tmpl`).
 
 ---
 
@@ -181,7 +72,7 @@ For observing a worker agent while it is still executing (without waiting for it
    # Inspect by agent session or link name (works even while the agent turn is in progress)
    relay peek zed:8878e5d3
    relay peek qoder:e09937bb --diff --json
-   relay peek review-mopheus
+   relay peek claude:652e7f08
    ```
 2. **Inject Mid-Turn Correction (`relay steer`) — Hook-Capable Agents**:
    - Queue a correction ONLY for high-confidence defects (hard bugs, broken security/path invariants, scope drift) — never interrupt workers for style nitpicks:
@@ -209,28 +100,43 @@ For observing a worker agent while it is still executing (without waiting for it
 
 ---
 
-## 4. Failure Triage & Guardrails
+## 4. Optional Bidirectional Link Mode (External Terminal / Async AGY Push)
+
+Use `relay link` + `relay send` / `relay pull` only when you explicitly want:
+- A human or script in an **external terminal** to shuttle outputs between two live IDE/agent sessions without copy-pasting (e.g., forwarding Antigravity's latest assistant turn to Qoder without `-m`, or asynchronously pushing Qoder's review back into an Antigravity chat window); or
+- A named persistent bidirectional channel tracked under `relay log <link-name>`.
+
+```bash
+# 1. Discover sessions on both ends
+relay session list -w <workspace>
+
+# 2. Bind a named link (supports UUID prefixes)
+relay link create review-<repo> agy:<agy_id> qoder:<qoder_id>
+
+# 3. Forward between endpoints (omit -m to auto-extract source's latest assistant turn)
+relay send review-<repo> --to qoder -t review -m "<context>"
+relay send review-<repo> --to agy                    # Async push into Antigravity chat
+relay pull review-<repo> --from qoder                # Synchronous stdout pull (safe for Zed/Pi)
+```
+*(Note: `relay send <link> --to zed` is intentionally disabled to avoid mutating Zed's live `threads.db`; use `relay ask` or `relay pull` instead.)*
+
+---
+
+## 5. Failure Triage & Guardrails
 
 - **ABSOLUTE RED LINE: Never Bypass Relay by Reading Private Session Files**:
   - **NEVER** use `tail ~/.qoder/projects/*.jsonl | jq`, `cat`, or direct SQLite queries to "peek" or "extract" counterpart outputs behind Relay's back.
-  - Doing so breaks the audit chain (`relay log`), bypasses state machine synchronization, and risks reading partial in-progress turns.
-  - All communication across agents must strictly flow through `relay send` / `relay pull`.
-- **Handling Busy State (`source agent 'qoder' is currently busy generating output`)**:
-  - Multi-tool deep reviews typically take 30–60 seconds.
-  - If `relay send <link> --to agy` or `relay pull <link> --from qoder` reports that Qoder is still busy, **DO NOT resort to raw file hacks**.
-  - Wait 5–10 seconds and re-run the same command (`relay send <link-name> --to agy` or `relay pull <link-name> --from qoder`).
-- **Exit code 127 (`qodercli: command not found`)**:
-  Ensure PATH includes `~/.local/bin`: `export PATH=$PATH:$HOME/.local/bin`.
+  - All inspection and cross-agent exchange must flow through `relay ask` / `relay peek` / `relay send` / `relay pull`.
+- **Handling Busy State (`source agent '...' is currently busy generating output`)**:
+  - Multi-tool deep reviews typically take 30–120 seconds. Wait 5–10 seconds and re-run the Relay command rather than reading raw files.
+- **Exit code 127 (`qodercli` / `claude` / `codex` not found)**:
+  Ensure `PATH` includes `~/.local/bin` and `/opt/homebrew/bin` (or set `QODER_CLI_PATH` / `CLAUDE_CLI_PATH` / `CODEX_CLI_PATH` / `PI_CLI_PATH`).
 - **Exit code 1 (`Not logged in · Please run /login`)**:
-  Run `qodercli login` to authorize the headless worker once.
+  Run `qodercli login` (or `claude login` / `codex login`) once to authorize the headless worker.
 - **`signal: killed` / Execution Timed Out**:
-  If Qoder performs very deep multi-tool inspections exceeding the default 600s, override via:
+  Default timeout is `600s`. For very deep multi-tool inspections, override per-call via `--timeout 15m` or env:
   ```bash
-  RELAY_DELIVERY_TIMEOUT=900s relay send <link-name> --to qoder -m "<prompt>"
+  RELAY_DELIVERY_TIMEOUT=900s relay ask qoder -w <worktree> -t review -m "<prompt>"
   ```
 - **Permission Prompt Blocking**:
-  `pkg/adapter/qoder` automatically passes `--dangerously-skip-permissions` so non-interactive tools (`go test`, `git diff`) run without stalling.
-- **Direct Push to Zed (`zed native agent sessions do not support direct push delivery`)**:
-  Zed native threads are read-only in Relay to prevent corrupting live `threads.db` state. Always retrieve counterpart responses via `relay pull <link-name> --from <source-agent>`.
-- **Desktop GUI Closed**:
-  Qoder Desktop App is completely optional. All operations run directly against `~/.qoder/projects/` and the headless CLI engine.
+  Relay automatically passes non-interactive bypass flags (`--dangerously-skip-permissions` for Qoder/Claude, `--dangerously-bypass-approvals-and-sandbox` for Codex) so automated review tools (`git`, `go test`, `grep`) run without stalling.

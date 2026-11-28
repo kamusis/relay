@@ -16,6 +16,8 @@ import (
 
 	"github.com/kamusis/relay/pkg/adapter"
 	"github.com/kamusis/relay/pkg/adapter/antigravity"
+	"github.com/kamusis/relay/pkg/adapter/claude"
+	"github.com/kamusis/relay/pkg/adapter/codex"
 	"github.com/kamusis/relay/pkg/adapter/pi"
 	"github.com/kamusis/relay/pkg/adapter/qoder"
 	"github.com/kamusis/relay/pkg/adapter/zed"
@@ -29,6 +31,8 @@ func init() {
 	// Register default agent adapters
 	registry.Register(antigravity.New())
 	registry.Register(qoder.New())
+	registry.Register(claude.New())
+	registry.Register(codex.New())
 	registry.Register(pi.New())
 	registry.Register(zed.New())
 }
@@ -44,6 +48,7 @@ to directly pass messages, reviews, and tasks to each other in the background.`,
 		SilenceErrors: true,
 	}
 
+	rootCmd.AddCommand(newAskCmd())
 	rootCmd.AddCommand(newSessionCmd())
 	rootCmd.AddCommand(newLinkCmd())
 	rootCmd.AddCommand(newSendCmd())

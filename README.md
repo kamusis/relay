@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/Architecture-CGO--Free%20%7C%20Stateless-brightgreen)](#core-design-principles)
 
-`relay` enables disparate AI coding agents (such as **Google Antigravity**, **Zed native Agent (`zed`)**, **Pi Coding Agent (`pi` / Zed `pi-acp`)**, and **Qoder CLI / Headless Worker**) to directly communicate, conduct automated code reviews, exchange context, and collaborate in the background—eliminating the need for human copy-pasting between chat windows.
+`relay` enables disparate AI coding agents (such as **Google Antigravity**, **Claude Code**, **OpenAI Codex CLI**, **Zed native Agent (`zed`)**, **Pi Coding Agent (`pi` / Zed `pi-acp`)**, and **Qoder CLI / Headless Worker**) to directly communicate, conduct automated code reviews, inspect live worktrees, steer running workers, and collaborate in the background—eliminating the need for human copy-pasting between chat windows.
 
 ---
 
@@ -51,17 +51,19 @@ graph TD
 
     subgraph Adapters ["Pluggable Agent Adapters"]
         AGY["Antigravity Adapter<br/>(Language Server agentapi + SQLite)"]
-        Qoder["Qoder Adapter<br/>(POSIX JSONL + qodercli Headless Runtime)"]
+        Qoder["Qoder Adapter<br/>(JSONL + qodercli Headless Ask/Deliver)"]
+        Claude["Claude Code Adapter<br/>(JSONL + claude -p Headless Ask/Deliver)"]
+        Codex["Codex Adapter<br/>(Rollout JSONL + codex exec Ask/Deliver)"]
         Zed["Zed Adapter<br/>(SQLite threads.db + zstd + relay pull)"]
-        Pi["Pi Adapter<br/>(Tree JSONL + pi CLI / Zed pi-acp)"]
-        Future["Future: Claude Code / Codex..."]
+        Pi["Pi Adapter<br/>(Tree JSONL + pi -p Headless Ask/Deliver)"]
     end
 
     Registry --> AGY
     Registry --> Qoder
+    Registry --> Claude
+    Registry --> Codex
     Registry --> Zed
     Registry --> Pi
-    Registry --> Future
     Dispatcher --> Hist["Audit Logger (~/.config/relay/history.jsonl)"]
 ```
 
@@ -205,6 +207,21 @@ TIME                 LINK        DIRECTION             STATUS     PROMPT        
 
 ## Command Reference
 
+### `relay ask` (Default Linkless Workflow)
+Send a prompt directly to any headless-capable target agent (`qoder`, `claude`, `codex`, `pi`) without creating a link or requiring a source session adapter. Prints the reviewer's clean reply to `stdout`, prints session/audit provenance to `stderr`, and logs every turn in `$RELAY_HOME/history.jsonl` (`link_name: "ask"`).
+```bash
+# Round 1: auto-reuses latest Qoder session for the worktree (or creates a new one in one turn)
+relay ask qoder -w .worktrees/fix-auth -t review -m "Review auth token refresh fix"
+
+# Round 2: continue the exact session returned on stderr
+relay ask qoder:2a037e6d -t followup -m "Fixed B1 and B2; go test -race passes"
+
+# Ask Claude Code, Codex, or Pi directly (pass --new to force a fresh session)
+relay ask claude --new -w . -m "Check nil pointer edge cases in pkg/steer"
+relay ask codex -w . -t review -m "Verify lock ordering"
+relay ask pi -w . -m "Summarize recent commits" --json
+```
+
 ### `relay session list`
 Discover local conversation sessions.
 ```bash
@@ -214,15 +231,15 @@ relay session list
 # Filter by workspace directory
 relay session list -w /path/to/repo
 
-# Filter by specific agent (agy, zed, qoder, pi)
+# Filter by specific agent (agy, zed, qoder, claude, codex, pi)
 relay session list --agent qoder
 
 # List global / scratch sessions without a workspace
 relay session list -g
 ```
 
-### `relay link`
-Manage named communication channels. Links are sorted by `LAST RELAY` activity descending.
+### `relay link` (Optional Bidirectional Channel Mode)
+Manage named bidirectional communication channels for bridging two live chat sessions from an external terminal or asynchronously pushing messages into an Antigravity chat pane. Links are sorted by `LAST RELAY` activity descending.
 ```bash
 # Create a link (supports UUID prefixes)
 relay link create <link-name> <session-a> <session-b>
@@ -441,6 +458,10 @@ Templates use standard Go `text/template` syntax and have access to the followin
 | `RELAY_STEER_TARGET` | Explicit steer target key matched during `relay steer drain` (e.g. `qoder:<id>` or `ws:<dir>`) | Auto-detected |
 | `QODER_CLI_PATH` | Explicit path to `qodercli` binary | Auto-detected |
 | `QODER_DB_PATH` | Explicit path to Qoder desktop `main.sqlite` database | Auto-detected |
+| `CLAUDE_CLI_PATH` | Explicit path to `claude` binary | Auto-detected |
+| `CLAUDE_CONFIG_DIR` | Override Claude Code configuration & projects root directory | `~/.claude` |
+| `CODEX_CLI_PATH` | Explicit path to `codex` binary | Auto-detected |
+| `CODEX_HOME` | Override Codex CLI state & sessions root directory | `~/.codex` |
 | `PI_CLI_PATH` | Explicit path to `pi` CLI binary | Auto-detected |
 | `PI_CODING_AGENT_DIR` | Override Pi agent configuration root directory | `~/.pi/agent` |
 | `PI_CODING_AGENT_SESSION_DIR` | Override Pi session storage directory | `~/.pi/agent/sessions` |
