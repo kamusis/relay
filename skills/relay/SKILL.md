@@ -27,7 +27,7 @@ export PATH=$PATH:$HOME/.local/bin
 | **Pull Output (Zed/Pi)** | `relay pull <link-name> --from <source-agent>` |
 | **Peek Live Progress** | `relay peek <worktree\|agent:id\|link> [--diff] [-f <file>] [--json]` |
 | **Steer (Hook Agents)** | `relay steer <worktree\|agent:id> -m "<correction>" [--blocking]` |
-| **Steer Queue & Hook** | `relay steer list [--all]` / `relay steer hook-install --agent all\|claude\|qoder [--status\|--uninstall]` / `relay steer drain --format hook-json --read-hook-stdin` |
+| **Steer Queue & Hook** | `relay steer list [--all]` / `relay steer hook-install --agent all\|claude\|qoder\|pi [--status\|--uninstall]` / `relay steer drain --format hook-json --read-hook-stdin` |
 | **View Audit Log** | `relay log <link-name> [-n <limit>]` |
 
 ---
