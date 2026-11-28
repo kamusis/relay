@@ -66,9 +66,16 @@ Relay separates **who initiates a call (Caller)** from **who executes a headless
 
 ```mermaid
 graph TD
-    User["Developer / Autonomous Agent (relay)"] --> LinkStore["Link Store (~/.config/relay/links.json)"]
-    LinkStore --> Dispatcher["Relay Router & Dispatcher"]
-    Dispatcher --> Registry["Adapter Registry"]
+    User["Any Caller Agent / Developer Shell (relay)"] --> Ask["Direct Ask (Default)<br/>relay ask"]
+    User --> LinkMode["Bidirectional Channel (Optional)<br/>relay link / send / pull"]
+    User --> Supervise["Live Supervision<br/>relay peek / steer"]
+
+    Ask --> Dispatcher["Relay Router & Dispatcher"]
+    LinkMode --> LinkStore["Link Store ($RELAY_HOME/links.json)"]
+    LinkStore --> Dispatcher
+    Supervise --> SteerStore["Steer Queue ($RELAY_HOME/steer.jsonl)<br/>+ Git / Session Inspector"]
+    SteerStore --> Registry["Adapter Registry"]
+    Dispatcher --> Registry
 
     subgraph Adapters ["Pluggable Agent Adapters"]
         AGY["Antigravity Adapter<br/>(Language Server agentapi + SQLite)"]
@@ -85,50 +92,77 @@ graph TD
     Registry --> Codex
     Registry --> Zed
     Registry --> Pi
-    Dispatcher --> Hist["Audit Logger (~/.config/relay/history.jsonl)"]
+    Dispatcher --> Hist["Audit Logger ($RELAY_HOME/history.jsonl)"]
 ```
 
 ### The Asymmetric Orchestrator-Worker Pattern (Why Reviewers Never Touch Relay)
 
-In practical workflows, developers interact primarily with **one primary agent** (e.g., Google Antigravity). Relay is deliberately architected as an **Asymmetric Orchestrator-Worker pipeline** rather than symmetric peer-to-peer chat:
+In practical workflows, developers interact primarily with **one primary coding agent** (Antigravity, Claude Code, Zed, Pi, Codex, etc.). Relay is deliberately architected as an **Asymmetric Orchestrator-Worker pipeline** rather than symmetric peer-to-peer chat.
+
+#### Default Linkless Loop (`relay ask` — 1 Command per Round)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Dev as Developer
-    participant AGY as Antigravity (Orchestrator)
+    participant Orch as Primary Agent (Any CLI/IDE)
+    participant Relay as Relay CLI
+    participant Reviewer as Headless Reviewer (Qoder/Claude/Codex/Pi)
+
+    Dev->>Orch: "Have Qoder review my changes"
+    Orch->>Relay: relay ask qoder --new -w .worktrees/feat-x -t review -m "..."
+    Relay->>Reviewer: Starts fresh headless turn with rendered review prompt
+    Note over Reviewer: Pure review: runs diff & tests<br/>Zero Relay awareness or skill needed
+    Reviewer-->>Relay: Returns Markdown verdict + session ID
+    Relay-->>Orch: Prints verdict to stdout (session ID on stderr, audited in history.jsonl)
+    Note over Orch: Fixes blocking comments & runs tests
+    Orch->>Relay: relay ask qoder:<session_id> -t followup -m "Fixed B1/B2"
+    Relay->>Reviewer: Resumes exact reviewer session
+    Reviewer-->>Orch: Outputs "Verdict: APPROVED" via stdout
+    Orch->>Dev: Presents complete review & verification summary
+```
+
+<details>
+<summary><strong>Full Bidirectional Link Loop (Optional: External Terminal / Async Antigravity IDE Push)</strong></summary>
+
+When orchestrating two live chat windows from an external terminal or asynchronously injecting verdicts into an open Antigravity IDE chat pane, `relay link` + `relay send` preserves the full bidirectional flow:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer
+    participant AGY as Antigravity (IDE Session)
     participant Relay as Relay CLI
     participant Qoder as Qoder Worker (Reviewer)
 
     Dev->>AGY: "Please have Qoder review my changes"
-    Note over AGY: AGY drives the entire loop via relay skill
     AGY->>Relay: relay send <link> --to qoder -t review -m "..."
-    Relay->>Qoder: Injects prompt into headless session
-    Note over Qoder: Pure review: runs diff & tests<br/>Zero Relay awareness or skill needed
+    Relay->>Qoder: Injects prompt into linked headless session
     Qoder-->>Relay: Writes Markdown review verdict
-    AGY->>Relay: relay send <link> --to agy (Pulls verdict)
-    Relay->>AGY: Injects Qoder's review into AGY
+    AGY->>Relay: relay send <link> --to agy (Async push into AGY chat)
+    Relay->>AGY: Injects Qoder's review as a queued AGY message
     Note over AGY: AGY addresses comments in worktree
     AGY->>Relay: relay send <link> --to qoder -t followup -m "..."
     Relay->>Qoder: Re-verifies fixes
     Qoder-->>Relay: Outputs "Verdict: APPROVED"
-    AGY->>Relay: relay send <link> --to agy (Pulls approval)
+    AGY->>Relay: relay send <link> --to agy (Async push approval)
     AGY->>Dev: Presents complete review & verification summary
 ```
 
+</details>
+
 #### Why the Reviewer Agent Never Uses Relay:
-1. **Zero-Invasion on Reviewer**: Qoder operates 100% as a standard code reviewer. It requires **no Relay skill, no CLI installation in its context, and zero awareness of link names or session IDs**. It only needs to do what it does best: inspect diffs, verify architectural compliance, and run tests.
-2. **Single-Ended Orchestration (Zero Deadlocks)**: All lifecycle transitions (`dispatch review -> pull verdict -> fix code -> dispatch followup -> pull approval`) are deterministically driven by the active Orchestrator. This eliminates multi-agent race conditions, session lock contention, or split-brain deadlocks.
-3. **Single-Pane Experience**: The human developer never leaves their primary IDE chat window. Antigravity acts as the active driver, delegating to Qoder in the background and presenting the final result.
+1. **Zero-Invasion on Reviewer**: The reviewer operates 100% as a standard code reviewer. It requires **no Relay skill, no CLI installation in its context, and zero awareness of link names or session IDs**. It only needs to do what it does best: inspect diffs, verify architectural compliance, and run tests.
+2. **Single-Ended Orchestration (Zero Deadlocks)**: All lifecycle transitions (`ask review -> fix code -> ask followup -> approved`) are deterministically driven by the active Orchestrator. This eliminates multi-agent race conditions, session lock contention, or split-brain deadlocks.
+3. **Single-Pane Experience**: The human developer never leaves their primary IDE or terminal. The primary agent delegates to the reviewer in the background and presents the verified result.
 
 ---
 
 ## Installation
 
 ### Prerequisites
-- **Go 1.22+**
-- **Google Antigravity** (IDE running locally)
-- **Qoder CLI** (standalone `qodercli` or the runtime bundled with Qoder Desktop)
+- **Go 1.22+** (to build from source)
+- **At least one headless receiver CLI** you want to call (e.g. `qodercli`, `claude`, `codex`, or `pi`). No specific caller IDE is required.
 
 ### Install via Source
 ```bash
@@ -447,6 +481,15 @@ Templates use standard Go `text/template` syntax and have access to the followin
 - **Headless Execution**: Runs in non-interactive mode (`-p` / `--print`) with `--dangerously-skip-permissions` to allow automated verification tools (`git`, `go test`, `grep`) to execute without interactive stalls.
 - **Zero GUI Dependency**: Executes directly against `~/.qoder/projects/` session storage. The desktop IDE does not need to be running, though desktop-created sessions and titles are automatically discovered from local SQLite databases.
 
+### Claude Code (`claude`)
+- **Session Storage**: Discovers JSONL transcripts under `~/.claude/projects/<workspace-slug>/` (honoring `CLAUDE_CONFIG_DIR`), supporting exact or prefix session ID lookup and `stop_reason: "tool_use"` busy-turn protection.
+- **Headless Ask & Delivery**: Invokes `claude --dangerously-skip-permissions --output-format json -p "<prompt>"` (with `--resume <session-id>` for multi-round continuation), parsing `session_id` and `result` directly from the JSON envelope.
+- **Mid-Turn Steering**: Supports one-command `PostToolUse` hook installation via `relay steer hook-install --agent claude` (user/project `settings.json`, plus automatic detection of `.claude/settings.local.json`).
+
+### OpenAI Codex CLI (`codex`)
+- **Session Storage**: Walks rollout JSONL transcripts under `~/.codex/sessions/` (honoring `CODEX_HOME`), reading `session_meta` headers (`id`, `cwd`) and extracting the latest assistant response from `response_item` / `event_msg` records.
+- **Headless Ask & Delivery**: Invokes `codex exec -C <workspace> --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json -o <tmpfile> "<prompt>"` (or `codex exec resume <session-id> ...` for follow-up rounds), capturing `thread_id` from the JSONL event stream and the final assistant reply from `-o`.
+
 ### Zed Native Agent (`zed`)
 - **Session Storage**: Reads Zed's local SQLite database (`threads.db`) read-only across macOS (`~/Library/Application Support/Zed/threads/threads.db`), Linux (`$XDG_DATA_HOME/zed/threads/threads.db`), and Windows/WSL (`%LOCALAPPDATA%/Zed/threads/threads.db`), decompressing `zstd` thread payloads in pure Go (`klauspost/compress/zstd`).
 - **Workspace & Subagent Handling**: Filters top-level threads (`parent_id IS NULL`), matches `folder_paths` (falling back to `initial_project_snapshot.worktree_snapshots` for legacy threads), and skips `Thinking` blocks / `"Resume"` markers when extracting assistant text.
@@ -504,13 +547,17 @@ Templates use standard Go `text/template` syntax and have access to the followin
 
 ## Roadmap
 
-- [x] Antigravity, Zed native Agent (`zed`), Qoder & Pi Coding Agent (`pi` / Zed `pi-acp`) adapters
+- [x] Antigravity, Zed native Agent (`zed`), Qoder, Pi Coding Agent (`pi` / Zed `pi-acp`), Claude Code (`claude`), and OpenAI Codex CLI (`codex`) adapters
+- [x] Direct linkless `relay ask` workflow for one-command headless peer reviews (`qoder`, `claude`, `codex`, `pi`)
+- [x] Live progress inspection (`relay peek`) and mid-turn steering (`relay steer` + `hook-install` for Claude Code, Qoder CLI, and Pi)
 - [x] Synchronous `relay pull` for active editor orchestrator sessions
+- [x] Isolated state directory override via `RELAY_HOME`
 - [x] Windows WSL / drvfs cross-boundary SQLite & credentials support
-- [x] Autonomous Session & Link creation skill (`skills/relay/SKILL.md`)
-- [x] Built-in & custom prompt templates (`review`, `followup`)
+- [x] Autonomous workflow skill (`skills/relay/SKILL.md`)
+- [x] Built-in & custom prompt templates (`review`, `followup`, `supervise`)
 - [x] Audit trail with execution status and error diagnostics
-- [ ] OpenAI Codex / Claude Code adapters
+- [ ] Mopheus Daemon Control Socket backend (`mopheus` adapter for sandboxed task-to-task collaboration & read-only peer review)
+- [ ] Codex CLI `hooks.json` steering integration
 
 ---
 
