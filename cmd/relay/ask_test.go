@@ -189,13 +189,20 @@ func TestResolveAskTimeoutAndStdinMessage(t *testing.T) {
 	reg := registry.New()
 	reg.Register(stub)
 	var out bytes.Buffer
-	if err := executeAsk(context.Background(), strings.NewReader("stdin review body\n"), &out, nil, reg, nil, prompt.NewManager(""), askOptions{
+	// Verify bare --from agy parses to FromAgent=antigravity, FromSession=""
+	histStore := history.NewStore(filepath.Join(t.TempDir(), "history.jsonl"))
+	if err := executeAsk(context.Background(), strings.NewReader("stdin review body\n"), &out, nil, reg, histStore, prompt.NewManager(""), askOptions{
 		Target:  "claude",
 		Message: "-",
+		From:    "agy",
 	}); err != nil {
 		t.Fatalf("stdin message error = %v", err)
 	}
 	if stub.lastReq.Prompt != "stdin review body" {
 		t.Fatalf("expected prompt from stdin, got %q", stub.lastReq.Prompt)
+	}
+	recs, err := histStore.List("ask", 5)
+	if err != nil || len(recs) != 1 || recs[0].FromAgent != adapter.AgentAntigravity || recs[0].FromSession != "" {
+		t.Fatalf("expected bare --from agy recorded as antigravity with empty session, got %+v, err=%v", recs, err)
 	}
 }

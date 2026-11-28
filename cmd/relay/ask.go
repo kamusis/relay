@@ -23,15 +23,14 @@ import (
 const defaultAskTimeout = 600 * time.Second
 
 type askOptions struct {
-	Target       string
-	Workspace    string
-	Template     string
-	Message      string
-	ForceNew     bool
-	From         string
-	Timeout      time.Duration
-	AsJSON       bool
-	ReadMsgStdin bool
+	Target    string
+	Workspace string
+	Template  string
+	Message   string
+	ForceNew  bool
+	From      string
+	Timeout   time.Duration
+	AsJSON    bool
 }
 
 type askJSONOutput struct {
@@ -126,7 +125,7 @@ func executeAsk(
 	}
 
 	msg := opts.Message
-	if opts.ReadMsgStdin || strings.TrimSpace(msg) == "-" {
+	if strings.TrimSpace(msg) == "-" {
 		if in == nil {
 			return fmt.Errorf("stdin reader is unavailable for -m -")
 		}
@@ -173,6 +172,9 @@ func executeAsk(
 				fromAgent = parsed
 				fromSession = strings.TrimSpace(parts[1])
 			}
+		} else if parsed, parseErr := adapter.ParseAgentType(fromSession); parseErr == nil {
+			fromAgent = parsed
+			fromSession = ""
 		}
 	}
 
