@@ -233,13 +233,18 @@ func TestPiExtensionInstallUninstallAndProtection(t *testing.T) {
 		t.Fatalf("UninstallPiExtension #2 = (%v, %v), want (false, nil)", removedAgain, err)
 	}
 
-	// 5. Refuse to overwrite or delete unrelated user-authored file
+	// 5. Refuse to overwrite or delete unrelated user-authored files (even if they shell out to "relay steer drain")
 	if err := os.MkdirAll(filepath.Dir(extPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	custom := "// user custom pi extension\nexport default function() {}\n"
+	custom := "// hand-written extension calling relay steer drain directly\nexport default function() {}\n"
 	if err := os.WriteFile(extPath, []byte(custom), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	// Detection recognizes hand-written relay steer drain script so enqueue warnings stay quiet,
+	// while Install/Uninstall strictly require PiExtensionMarker before mutating or deleting.
+	if !IsPiExtensionInstalled(extPath) {
+		t.Fatal("expected IsPiExtensionInstalled=true for hand-written script calling relay steer drain")
 	}
 	if _, err := InstallPiExtension(extPath); err == nil {
 		t.Fatal("expected error refusing to overwrite unmanaged extension file")

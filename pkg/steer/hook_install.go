@@ -20,7 +20,8 @@ const PiExtensionMarker = "relay-steer-extension"
 
 // PiExtensionSource is the TypeScript extension installed into ~/.pi/agent/extensions/relay-steer.ts
 // or <project>/.pi/extensions/relay-steer.ts for Pi Coding Agent.
-const PiExtensionSource = `import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+// The type-only import uses the current @earendil-works/pi-coding-agent package name (erased at runtime by jiti).
+const PiExtensionSource = `import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // Managed by relay steer hook-install (relay-steer-extension).
 // Runs: relay steer drain --format text after mutating tool calls and injects
@@ -238,6 +239,36 @@ func UninstallAgentHook(spec HookAgentSpec, targetPath string) (bool, error) {
 	return UninstallHook(targetPath)
 }
 
+// StatusPathForScope returns the detected installation path for spec within the requested scope
+// ("user" or "project"), including extra project check paths such as .claude/settings.local.json.
+// When not installed, it returns ("", false).
+func StatusPathForScope(spec HookAgentSpec, scope, homeDir, projectDir string) (string, bool) {
+	targetPath, err := HookTargetPath(spec, scope, homeDir, projectDir)
+	if err != nil {
+		return "", false
+	}
+	if IsAgentHookInstalledAt(spec, targetPath) {
+		return targetPath, true
+	}
+	if strings.ToLower(strings.TrimSpace(scope)) == "project" {
+		baseDir := filepath.Dir(filepath.Dir(targetPath))
+		if strings.TrimSpace(projectDir) != "" {
+			if absDir, absErr := filepath.Abs(projectDir); absErr == nil {
+				baseDir = absDir
+			}
+		} else if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+			baseDir = cwd
+		}
+		for _, extraRel := range spec.ProjectCheckRels {
+			candidate := filepath.Join(baseDir, extraRel)
+			if IsAgentHookInstalledAt(spec, candidate) {
+				return candidate, true
+			}
+		}
+	}
+	return "", false
+}
+
 // CheckAgentHookInstalled checks user and optional project paths (including extra project check paths
 // such as .claude/settings.local.json) and returns all paths where the relay steer integration is present.
 func CheckAgentHookInstalled(spec HookAgentSpec, homeDir, projectDir string) []string {
@@ -284,8 +315,8 @@ func InstallPiExtension(extPath string) (bool, error) {
 		if string(existing) == PiExtensionSource {
 			return false, nil
 		}
-		if !strings.Contains(string(existing), PiExtensionMarker) && !strings.Contains(string(existing), "relay steer drain") {
-			return false, fmt.Errorf("%s already exists and is not managed by relay (refusing to overwrite)", extPath)
+		if !strings.Contains(string(existing), PiExtensionMarker) {
+			return false, fmt.Errorf("%s already exists and is not managed by relay (missing %s marker; refusing to overwrite)", extPath, PiExtensionMarker)
 		}
 	} else if !os.IsNotExist(err) {
 		return false, fmt.Errorf("failed to stat %s: %w", extPath, err)
@@ -298,7 +329,7 @@ func InstallPiExtension(extPath string) (bool, error) {
 }
 
 // UninstallPiExtension removes the relay-managed Pi extension at extPath.
-// Returns removed=false if the file does not exist, and refuses to delete files without the relay marker.
+// Returns removed=false if the file does not exist, and refuses to delete files without PiExtensionMarker.
 func UninstallPiExtension(extPath string) (bool, error) {
 	data, err := os.ReadFile(extPath)
 	if os.IsNotExist(err) {
@@ -307,9 +338,8 @@ func UninstallPiExtension(extPath string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to read %s: %w", extPath, err)
 	}
-	content := string(data)
-	if !strings.Contains(content, PiExtensionMarker) && !strings.Contains(content, "relay steer drain") {
-		return false, fmt.Errorf("%s is not managed by relay (refusing to delete)", extPath)
+	if !strings.Contains(string(data), PiExtensionMarker) {
+		return false, fmt.Errorf("%s is not managed by relay (missing %s marker; refusing to delete)", extPath, PiExtensionMarker)
 	}
 	if err := os.Remove(extPath); err != nil && !os.IsNotExist(err) {
 		return false, fmt.Errorf("failed to remove %s: %w", extPath, err)

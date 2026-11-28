@@ -80,10 +80,12 @@ func executeSteerHookInstall(
 		switch {
 		case statusOnly:
 			state := "not installed"
-			if steer.IsAgentHookInstalledAt(spec, targetPath) {
+			displayPath := targetPath
+			if foundPath, installed := steer.StatusPathForScope(spec, scope, homeDir, projectDir); installed {
 				state = "installed"
+				displayPath = foundPath
 			}
-			fmt.Fprintf(out, "%-8s  %-13s  %s\n", spec.Agent, state, targetPath)
+			fmt.Fprintf(out, "%-8s  %-13s  %s\n", spec.Agent, state, displayPath)
 		case uninstall:
 			removed, err := steer.UninstallAgentHook(spec, targetPath)
 			if err != nil {

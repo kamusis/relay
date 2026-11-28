@@ -224,9 +224,9 @@ For observing a worker agent while it is still executing (without waiting for it
 - **Exit code 1 (`Not logged in · Please run /login`)**:
   Run `qodercli login` to authorize the headless worker once.
 - **`signal: killed` / Execution Timed Out**:
-  If Qoder performs very deep multi-tool inspections exceeding the default 300s, override via:
+  If Qoder performs very deep multi-tool inspections exceeding the default 600s, override via:
   ```bash
-  RELAY_DELIVERY_TIMEOUT=600s relay send <link-name> --to qoder -m "<prompt>"
+  RELAY_DELIVERY_TIMEOUT=900s relay send <link-name> --to qoder -m "<prompt>"
   ```
 - **Permission Prompt Blocking**:
   `pkg/adapter/qoder` automatically passes `--dangerously-skip-permissions` so non-interactive tools (`go test`, `git diff`) run without stalling.

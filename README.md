@@ -430,7 +430,8 @@ Templates use standard Go `text/template` syntax and have access to the followin
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `RELAY_DELIVERY_TIMEOUT` | Maximum execution timeout for target agent turns (e.g. `300s`, `10m`) | `300s` |
+| `RELAY_HOME` | Override Relay state directory (`links.json`, `history.jsonl`, `steer.jsonl`, `templates/`) | `~/.config/relay` |
+| `RELAY_DELIVERY_TIMEOUT` | Maximum execution timeout for target agent turns (e.g. `600s`, `15m`) | `600s` |
 | `RELAY_STEER_TARGET` | Explicit steer target key matched during `relay steer drain` (e.g. `qoder:<id>` or `ws:<dir>`) | Auto-detected |
 | `QODER_CLI_PATH` | Explicit path to `qodercli` binary | Auto-detected |
 | `QODER_DB_PATH` | Explicit path to Qoder desktop `main.sqlite` database | Auto-detected |

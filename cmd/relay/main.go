@@ -688,7 +688,7 @@ func newSendCmd() *cobra.Command {
 			}
 
 			// 6. Inject payload into target session
-			timeout := 300 * time.Second
+			timeout := 600 * time.Second
 			if custom := os.Getenv("RELAY_DELIVERY_TIMEOUT"); custom != "" {
 				if d, err := time.ParseDuration(custom); err == nil && d > 0 {
 					timeout = d

@@ -256,7 +256,36 @@ func TestSteerHookInstallLifecycleAndWarningSuppression(t *testing.T) {
 		}
 	}
 
-	// 6. Uninstall removes hooks and Pi extension cleanly
+	// 6. Project-scope Pi extension install + Claude settings.local.json status alignment
+	projDir := filepath.Join(home, "proj-repo")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var piProjOut bytes.Buffer
+	if err := executeSteerHookInstall(&piProjOut, "pi", "project", home, projDir, false, false); err != nil {
+		t.Fatalf("project-scope pi install: %v", err)
+	}
+	piProjExt := filepath.Join(projDir, ".pi", "extensions", "relay-steer.ts")
+	if !steer.IsPiExtensionInstalled(piProjExt) {
+		t.Fatalf("expected project Pi extension at %s", piProjExt)
+	}
+	if !strings.Contains(piProjOut.String(), piProjExt) {
+		t.Fatalf("expected output to mention %s, got:\n%s", piProjExt, piProjOut.String())
+	}
+
+	claudeLocal := filepath.Join(projDir, ".claude", "settings.local.json")
+	if _, err := steer.InstallHook(claudeLocal, "Edit|Write|MultiEdit|Bash", steer.HookDrainCommand); err != nil {
+		t.Fatal(err)
+	}
+	var projStatus bytes.Buffer
+	if err := executeSteerHookInstall(&projStatus, "all", "project", home, projDir, false, true); err != nil {
+		t.Fatalf("project-scope status: %v", err)
+	}
+	if !strings.Contains(projStatus.String(), "claude") || !strings.Contains(projStatus.String(), claudeLocal) || !strings.Contains(projStatus.String(), "installed") {
+		t.Fatalf("expected project status to report claude installed via settings.local.json, got:\n%s", projStatus.String())
+	}
+
+	// 7. Uninstall removes user-scope hooks and Pi extension cleanly
 	var uninstallOut bytes.Buffer
 	if err := executeSteerHookInstall(&uninstallOut, "all", "user", home, "", true, false); err != nil {
 		t.Fatalf("uninstall all: %v", err)
