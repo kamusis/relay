@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -22,6 +23,8 @@ const (
 	AgentPi AgentType = "pi"
 	// AgentZed represents Zed's native AI Agent Panel.
 	AgentZed AgentType = "zed"
+	// AgentCLI represents a direct CLI / shell caller (linkless relay ask).
+	AgentCLI AgentType = "cli"
 )
 
 const (
@@ -194,4 +197,54 @@ type Adapter interface {
 
 	// ListSessions discovers sessions available locally, optionally filtered by workspace.
 	ListSessions(workspace string, limit int) ([]Session, error)
+}
+
+// AskRequest describes a direct linkless request sent to a headless-capable target agent.
+type AskRequest struct {
+	SessionID string // Optional existing session ID (exact or prefix) to resume; empty creates a new session
+	Workspace string // Working directory for the target agent
+	Prompt    string // Fully rendered prompt text
+}
+
+// AskResponse captures the synchronous result of a direct linkless Ask call.
+type AskResponse struct {
+	SessionID string // Resulting target session ID (for multi-round follow-up)
+	Output    string // Final assistant reply text
+}
+
+// Asker is optionally implemented by adapters that support direct, linkless headless execution
+// (returning the target session ID and final reply synchronously without a pre-existing Link).
+type Asker interface {
+	Ask(ctx context.Context, req AskRequest) (*AskResponse, error)
+}
+
+// ParseCLIResultJSON extracts session_id, result text, and is_error from the JSON result envelope
+// emitted by Claude Code (`--output-format json`) and Qoder CLI (`-f json`).
+func ParseCLIResultJSON(raw []byte) (sessionID, result string, isError bool, ok bool) {
+	type cliResult struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+		Result    string `json:"result"`
+		IsError   bool   `json:"is_error"`
+	}
+
+	// Scan from the last JSON line upward in case diagnostic text preceded the JSON object.
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var env cliResult
+		if err := json.Unmarshal([]byte(line), &env); err == nil && (env.Type == "result" || env.SessionID != "" || env.Result != "") {
+			return strings.TrimSpace(env.SessionID), strings.TrimSpace(env.Result), env.IsError, true
+		}
+	}
+
+	// Fallback: try parsing the entire payload as a pretty-printed single JSON object.
+	var full cliResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &full); err == nil && (full.Type == "result" || full.SessionID != "" || full.Result != "") {
+		return strings.TrimSpace(full.SessionID), strings.TrimSpace(full.Result), full.IsError, true
+	}
+	return "", "", false, false
 }

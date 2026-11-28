@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/kamusis/relay/pkg/adapter"
 	"github.com/mattn/go-runewidth"
 )
@@ -573,6 +574,56 @@ func (a *Adapter) Deliver(ctx context.Context, t adapter.Transmission) error {
 		return fmt.Errorf("pi delivery failed: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// Ask executes a direct linkless headless Pi turn (`pi -p`) and returns the session ID and final output.
+func (a *Adapter) Ask(ctx context.Context, req adapter.AskRequest) (*adapter.AskResponse, error) {
+	cliPath, err := a.FindCLI()
+	if err != nil {
+		return nil, err
+	}
+
+	ws := strings.TrimSpace(req.Workspace)
+	sessionID := strings.TrimSpace(req.SessionID)
+	var args []string
+	if sessionID != "" {
+		entry, locErr := a.locateSessionFile(sessionID)
+		if locErr != nil {
+			return nil, locErr
+		}
+		sessionID = entry.id
+		if ws == "" {
+			ws = entry.cwd
+		}
+		args = []string{"-p", "--session", entry.path, "--", req.Prompt}
+	} else {
+		sessionID = uuid.NewString()
+		args = []string{"-p", "--session-id", sessionID, "--", req.Prompt}
+	}
+	if ws == "" {
+		ws = "."
+	}
+
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+	cmd.Dir = ws
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("pi execution timed out (context deadline exceeded)")
+		}
+		return nil, fmt.Errorf("pi ask failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	result := strings.TrimSpace(string(out))
+	if result == "" {
+		if fb, fbErr := a.GetLatestAssistantOutput(sessionID); fbErr == nil {
+			result = fb
+		}
+	}
+	return &adapter.AskResponse{
+		SessionID: sessionID,
+		Output:    result,
+	}, nil
 }
 
 // ListSessions discovers local Pi sessions, optionally filtered by workspace directory.

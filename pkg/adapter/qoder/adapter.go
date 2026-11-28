@@ -519,6 +519,66 @@ func (a *Adapter) Deliver(ctx context.Context, t adapter.Transmission) error {
 	return nil
 }
 
+// Ask executes a direct linkless headless Qoder CLI turn and returns the session ID and final output.
+// When req.SessionID is empty, qodercli creates a new session in req.Workspace and executes req.Prompt in one turn.
+func (a *Adapter) Ask(ctx context.Context, req adapter.AskRequest) (*adapter.AskResponse, error) {
+	cliPath, err := a.FindCLI()
+	if err != nil {
+		return nil, err
+	}
+
+	ws := strings.TrimSpace(req.Workspace)
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" {
+		sess, err := a.GetSession(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		sessionID = sess.ID
+		if ws == "" {
+			ws = sess.Workspace
+		}
+	}
+	if ws == "" {
+		ws = "."
+	}
+
+	args := []string{"-w", ws}
+	if sessionID != "" {
+		args = append(args, "-r", sessionID)
+	}
+	args = append(args, "--dangerously-skip-permissions", "-f", "json", "-p", req.Prompt)
+
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("qoder execution timed out (context deadline exceeded)")
+		}
+		return nil, fmt.Errorf("qoder ask failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	parsedSID, result, isErr, ok := adapter.ParseCLIResultJSON(out)
+	if parsedSID != "" {
+		sessionID = parsedSID
+	}
+	if ok && isErr {
+		return nil, fmt.Errorf("qoder returned an error: %s", result)
+	}
+	if result == "" && sessionID != "" {
+		if fallback, fbErr := a.GetLatestAssistantOutput(sessionID); fbErr == nil {
+			result = fallback
+		}
+	}
+	if result == "" && !ok {
+		result = strings.TrimSpace(string(out))
+	}
+	return &adapter.AskResponse{
+		SessionID: sessionID,
+		Output:    result,
+	}, nil
+}
+
 // ListSessions discovers sessions from ~/.qoder/projects/.
 func (a *Adapter) ListSessions(workspace string, limit int) ([]adapter.Session, error) {
 	projDir := a.projectsDir()
