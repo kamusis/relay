@@ -16,8 +16,9 @@ import (
 )
 
 func executeSteerEnqueue(
-	out io.Writer,
+	out, errOut io.Writer,
 	store *steer.Store,
+	homeDir string,
 	target, body, from string,
 	blocking bool,
 ) error {
@@ -42,6 +43,61 @@ func executeSteerEnqueue(
 		fmt.Fprintf(out, "  From:     %s\n", msg.From)
 	}
 	fmt.Fprintf(out, "  Message:  %s\n", runewidth.Truncate(strings.ReplaceAll(msg.Body, "\n", " "), 100, "..."))
+	if errOut != nil {
+		if warn := steer.MissingHookWarning(msg.Target, homeDir); warn != "" {
+			fmt.Fprintln(errOut, warn)
+		}
+	}
+	return nil
+}
+
+func executeSteerHookInstall(
+	out io.Writer,
+	agentSelector, scope, homeDir, projectDir string,
+	uninstall, statusOnly bool,
+) error {
+	if uninstall && statusOnly {
+		return fmt.Errorf("--uninstall and --status cannot be used together")
+	}
+	specs, err := steer.ResolveHookAgents(agentSelector)
+	if err != nil {
+		return err
+	}
+
+	for _, spec := range specs {
+		settingsPath, err := steer.HookSettingsPath(spec, scope, homeDir, projectDir)
+		if err != nil {
+			return err
+		}
+		switch {
+		case statusOnly:
+			state := "not installed"
+			if steer.IsHookInstalled(settingsPath) {
+				state = "installed"
+			}
+			fmt.Fprintf(out, "%-8s  %-13s  %s\n", spec.Agent, state, settingsPath)
+		case uninstall:
+			removed, err := steer.UninstallHook(settingsPath)
+			if err != nil {
+				return err
+			}
+			if removed {
+				fmt.Fprintf(out, "Removed relay steer PostToolUse hook for %s from %s\n", spec.Agent, settingsPath)
+			} else {
+				fmt.Fprintf(out, "No relay steer PostToolUse hook found for %s in %s\n", spec.Agent, settingsPath)
+			}
+		default:
+			changed, err := steer.InstallHook(settingsPath, spec.Matcher, steer.HookDrainCommand)
+			if err != nil {
+				return err
+			}
+			if changed {
+				fmt.Fprintf(out, "Installed relay steer PostToolUse hook for %s in %s (takes effect on the next session)\n", spec.Agent, settingsPath)
+			} else {
+				fmt.Fprintf(out, "Relay steer PostToolUse hook is already installed for %s in %s\n", spec.Agent, settingsPath)
+			}
+		}
+	}
 	return nil
 }
 
@@ -222,7 +278,8 @@ func newSteerCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return executeSteerEnqueue(cmd.OutOrStdout(), store, target, body, fromFlag, blockingFlag)
+		homeDir, _ := os.UserHomeDir()
+		return executeSteerEnqueue(cmd.OutOrStdout(), cmd.ErrOrStderr(), store, homeDir, target, body, fromFlag, blockingFlag)
 	}
 
 	steerCmd := &cobra.Command{
@@ -270,7 +327,8 @@ and drains them atomically inside PostToolUse hooks. Targets may be an agent ses
 			if err != nil {
 				return err
 			}
-			return executeSteerEnqueue(cmd.OutOrStdout(), store, target, body, addFrom, addBlocking)
+			homeDir, _ := os.UserHomeDir()
+			return executeSteerEnqueue(cmd.OutOrStdout(), cmd.ErrOrStderr(), store, homeDir, target, body, addFrom, addBlocking)
 		},
 	}
 	addCmd.Flags().StringVarP(&addMsg, "message", "m", "", "Steering directive content")
@@ -376,10 +434,53 @@ and drains them atomically inside PostToolUse hooks. Targets may be an agent ses
 	}
 	hookSnippetCmd.Flags().StringVar(&hookAgent, "agent", "claude", "Target hook-capable agent: claude, qoder, pi")
 
+	// `relay steer hook-install [--agent claude|qoder|all] [--scope user|project] [--dir <path>] [--uninstall|--status]`
+	var (
+		installAgent     string
+		installScope     string
+		installDir       string
+		installUninstall bool
+		installStatus    bool
+	)
+	hookInstallCmd := &cobra.Command{
+		Use:   "hook-install",
+		Short: "Install, inspect, or remove the PostToolUse steering hook in Claude Code / Qoder settings.json",
+		Example: `  # Install globally for both Claude Code and Qoder CLI (idempotent, preserves existing hooks)
+  relay steer hook-install --agent all
+
+  # Install only for Qoder CLI in user settings (~/.qoder/settings.json)
+  relay steer hook-install --agent qoder
+
+  # Install into a specific project (.claude/settings.json)
+  relay steer hook-install --agent claude --scope project --dir /path/to/repo
+
+  # Check installation status or remove hook
+  relay steer hook-install --status
+  relay steer hook-install --agent all --uninstall`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			homeDir, _ := os.UserHomeDir()
+			return executeSteerHookInstall(
+				cmd.OutOrStdout(),
+				installAgent,
+				installScope,
+				homeDir,
+				installDir,
+				installUninstall,
+				installStatus,
+			)
+		},
+	}
+	hookInstallCmd.Flags().StringVar(&installAgent, "agent", "all", "Target agent: claude, qoder, or all")
+	hookInstallCmd.Flags().StringVar(&installScope, "scope", "user", "Settings scope: user (~/.<agent>/settings.json) or project (<dir>/.<agent>/settings.json)")
+	hookInstallCmd.Flags().StringVar(&installDir, "dir", "", "Project directory when --scope project is used (defaults to cwd)")
+	hookInstallCmd.Flags().BoolVar(&installUninstall, "uninstall", false, "Remove the relay steer PostToolUse hook from settings.json")
+	hookInstallCmd.Flags().BoolVar(&installStatus, "status", false, "Check whether the relay steer PostToolUse hook is installed")
+
 	steerCmd.AddCommand(addCmd)
 	steerCmd.AddCommand(listCmd)
 	steerCmd.AddCommand(drainCmd)
 	steerCmd.AddCommand(clearCmd)
 	steerCmd.AddCommand(hookSnippetCmd)
+	steerCmd.AddCommand(hookInstallCmd)
 	return steerCmd
 }

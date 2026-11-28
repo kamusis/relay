@@ -81,13 +81,16 @@ func TestSteerEndToEndEnqueueListDrainHookJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Enqueue blocking directive targeting worktree
-	var enqOut bytes.Buffer
-	if err := executeSteerEnqueue(&enqOut, store, worktree, "Use /usr/sbin/ioreg instead of bare ioreg", "agy:17f5151f", true); err != nil {
+	// 1. Enqueue blocking directive targeting worktree (emits missing-hook warning on stderr)
+	var enqOut, enqErr bytes.Buffer
+	if err := executeSteerEnqueue(&enqOut, &enqErr, store, tmp, worktree, "Use /usr/sbin/ioreg instead of bare ioreg", "agy:17f5151f", true); err != nil {
 		t.Fatalf("executeSteerEnqueue: %v", err)
 	}
 	if !strings.Contains(enqOut.String(), "Severity: blocking") {
 		t.Fatalf("unexpected enqueue output: %s", enqOut.String())
+	}
+	if !strings.Contains(enqErr.String(), "relay steer hook-install") {
+		t.Fatalf("expected missing-hook warning on stderr when no hook installed, got: %q", enqErr.String())
 	}
 
 	// 2. List as JSON
@@ -191,5 +194,51 @@ func TestSteerListCJKTargetUTF8SafeAndResolveParity(t *testing.T) {
 	tgt, body, err := resolveSteerTargetAndBody(cjkDir, "", []string{"use absolute path"})
 	if err != nil || tgt != steer.WorkspaceTarget(cjkDir) || body != "use absolute path" {
 		t.Fatalf("resolveSteerTargetAndBody(-w + pos msg) = (%q, %q, %v)", tgt, body, err)
+	}
+}
+
+func TestSteerHookInstallLifecycleAndWarningSuppression(t *testing.T) {
+	home := t.TempDir()
+	store := steer.NewStore(filepath.Join(home, "steer.jsonl"))
+
+	// 1. Status before install shows not installed
+	var statusBefore bytes.Buffer
+	if err := executeSteerHookInstall(&statusBefore, "all", "user", home, "", false, true); err != nil {
+		t.Fatalf("status before: %v", err)
+	}
+	if !strings.Contains(statusBefore.String(), "not installed") {
+		t.Fatalf("expected not installed status, got:\n%s", statusBefore.String())
+	}
+
+	// 2. Install for qoder
+	var installOut bytes.Buffer
+	if err := executeSteerHookInstall(&installOut, "qoder", "user", home, "", false, false); err != nil {
+		t.Fatalf("install qoder: %v", err)
+	}
+	if !strings.Contains(installOut.String(), "Installed relay steer PostToolUse hook for qoder") {
+		t.Fatalf("unexpected install output:\n%s", installOut.String())
+	}
+
+	// 3. Enqueue for qoder now produces NO missing-hook warning on stderr
+	var enqOut, enqErr bytes.Buffer
+	if err := executeSteerEnqueue(&enqOut, &enqErr, store, home, "qoder:sess-1", "check lock", "agy", false); err != nil {
+		t.Fatalf("executeSteerEnqueue: %v", err)
+	}
+	if enqErr.Len() != 0 {
+		t.Fatalf("expected no warning after qoder hook install, got: %q", enqErr.String())
+	}
+
+	// 4. Reject conflicting --uninstall + --status
+	if err := executeSteerHookInstall(&installOut, "qoder", "user", home, "", true, true); err == nil {
+		t.Fatal("expected error when both --uninstall and --status are set")
+	}
+
+	// 5. Uninstall removes the hook cleanly
+	var uninstallOut bytes.Buffer
+	if err := executeSteerHookInstall(&uninstallOut, "qoder", "user", home, "", true, false); err != nil {
+		t.Fatalf("uninstall qoder: %v", err)
+	}
+	if !strings.Contains(uninstallOut.String(), "Removed relay steer PostToolUse hook for qoder") {
+		t.Fatalf("unexpected uninstall output:\n%s", uninstallOut.String())
 	}
 }

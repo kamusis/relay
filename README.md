@@ -289,8 +289,13 @@ relay steer clear [target] [--id <prefix>]
 # Atomically consume pending directives inside a PostToolUse hook
 relay steer drain --format hook-json --read-hook-stdin
 
-# Print ready-to-paste PostToolUse hook configuration
-relay steer hook-snippet --agent claude   # or qoder / pi
+# Install, inspect, or remove the PostToolUse hook automatically (preserves existing hooks)
+relay steer hook-install --agent all          # or --agent claude / --agent qoder
+relay steer hook-install --status
+relay steer hook-install --agent all --uninstall
+
+# Or print a copy-pasteable PostToolUse hook snippet (including manual Pi setup)
+relay steer hook-snippet --agent claude       # or qoder / pi
 ```
 
 ### `relay template`
@@ -412,7 +417,8 @@ Templates use standard Go `text/template` syntax and have access to the followin
 - **Headless Worker Delivery**: For background Pi sessions not open in Zed, `relay send --to pi` invokes `pi -p --session <session-file> -- <payload>`.
 
 ### PostToolUse Hook Integration (Mid-Turn Steering)
-- **Hook-Capable Agents (Claude Code, Qoder CLI, Pi)**: Configure a `PostToolUse` hook running `relay steer drain --format hook-json --read-hook-stdin` (or `scripts/relay-steer-hook.sh`). Run `relay steer hook-snippet --agent claude|qoder|pi` to print a ready-to-paste snippet.
+- **One-Time Hook Setup (Claude Code, Qoder CLI)**: Run `relay steer hook-install --agent all` (or `--agent claude` / `--agent qoder`, with `--scope user` default or `--scope project`) to idempotently merge the `PostToolUse` hook into `settings.json` while preserving all existing user hooks (takes effect on the next session). For Pi or manual setups, run `relay steer hook-snippet --agent pi` or point a hook at `scripts/relay-steer-hook.sh`.
+- **Missing-Hook Guard**: When `relay steer` enqueues a directive for `claude`, `qoder`, or a workspace where no `PostToolUse` hook is detected, it prints a warning on `stderr` pointing to `relay steer hook-install`.
 - **Zero-Noise Execution**: When no pending directive matches the worker's `session_id` or `cwd` (including subdirectories beneath a steered worktree), the hook exits `0` with empty output. When a match exists, it atomically marks the directive `consumed` under cross-process `flock` and emits `PostToolUse` JSON (`additionalContext`, plus `decision: "block"` when `--blocking` is set).
 
 ---
